@@ -1,15 +1,18 @@
 import streamlit as st
 
-# Define the pages and their clean display titles
+st.set_page_config(page_title="Quantamental", layout="wide")
+
+# Define the pages
 dcf_page = st.Page("pages/single_dcf.py", title="Single Stock DCF", default=True)
+dashboard_page = st.Page("pages/dashboard.py", title="Historical Dashboard")
 screener_page = st.Page("pages/screener.py", title="Batch Screener")
 
 # Set up the navigation router
 pg = st.navigation(
     {
-        "Valuation Tools": [dcf_page, screener_page]
+        "Valuation Tools": [dcf_page, screener_page],
+        "Fundamental Analysis": [dashboard_page]
     }
 )
 
-# Run the selected page
 pg.run()
