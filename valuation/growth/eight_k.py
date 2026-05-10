@@ -8,11 +8,12 @@ regex patterns for numeric growth guidance.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from html.parser import HTMLParser
 import requests
 
 from valuation.config import EDGAR_ARCHIVES_URL, sec_user_agent
+from valuation.data.edgar import filings_recent_parallel_block, submission_parallel_list
 from valuation.growth.types import GuidanceCandidate
 
 
@@ -55,23 +56,24 @@ def _accession_to_no_dashes(accession: str) -> str:
     return accession.replace("-", "")
 
 
-def _parse_list_field(obj: dict, key: str) -> list:
-    v = obj.get(key)
-    if v is None:
-        return []
-    if isinstance(v, list):
-        return v
-    return list(v)
-
-
 def recent_8k_filings(filings: dict, *, within_days: int = 365) -> list[dict]:
     """Filter the ``filings`` block of a submissions JSON to recent 8-K rows."""
-    forms = _parse_list_field(filings, "form")
-    dates = _parse_list_field(filings, "filingDate")
-    accessions = _parse_list_field(filings, "accessionNumber")
-    primary_docs = _parse_list_field(filings, "primaryDocument")
+    return recent_8k_filings_as_of(
+        filings, as_of=datetime.now(timezone.utc).date(), within_days=within_days
+    )
 
-    cutoff = datetime.now(timezone.utc).date() - timedelta(days=within_days)
+
+def recent_8k_filings_as_of(
+    filings: dict, *, as_of: date, within_days: int = 365
+) -> list[dict]:
+    """8-K rows with ``filingDate`` in (as_of - within_days, as_of] inclusive."""
+    filings = filings_recent_parallel_block(filings)
+    forms = submission_parallel_list(filings, "form")
+    dates = submission_parallel_list(filings, "filingDate")
+    accessions = submission_parallel_list(filings, "accessionNumber")
+    primary_docs = submission_parallel_list(filings, "primaryDocument")
+
+    cutoff = as_of - timedelta(days=within_days)
     out: list[dict] = []
     for form, fdate, acc, doc in zip(forms, dates, accessions, primary_docs):
         if form != "8-K":
@@ -80,7 +82,7 @@ def recent_8k_filings(filings: dict, *, within_days: int = 365) -> list[dict]:
             fd = datetime.strptime(fdate, "%Y-%m-%d").date()
         except ValueError:
             continue
-        if fd < cutoff:
+        if fd <= cutoff or fd > as_of:
             continue
         out.append(
             {
@@ -171,10 +173,23 @@ def _exhibit_urls_from_primary_index(
 
 
 def eight_k_guidance_candidates(
-    cik: int, submissions_filings_block: dict, *, limit: int = 8
+    cik: int,
+    submissions_filings_block: dict,
+    *,
+    limit: int = 8,
+    as_of: date | None = None,
 ) -> list[GuidanceCandidate]:
-    """Return regex guidance candidates from recent 8-K filing HTML + EX-99 exhibits."""
-    recent = recent_8k_filings(submissions_filings_block)[:limit]
+    """Return regex guidance candidates from recent 8-K filing HTML + EX-99 exhibits.
+
+    When ``as_of`` is set, only 8-Ks with filing date in the prior ``365`` days
+    up to and including ``as_of`` are considered (backtest / point-in-time).
+    """
+    if as_of is not None:
+        recent = recent_8k_filings_as_of(
+            submissions_filings_block, as_of=as_of, within_days=365
+        )[:limit]
+    else:
+        recent = recent_8k_filings(submissions_filings_block)[:limit]
     out: list[GuidanceCandidate] = []
 
     for row in recent:

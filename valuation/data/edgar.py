@@ -16,6 +16,7 @@ import requests
 
 from valuation.config import (
     EDGAR_COMPANYFACTS_URL,
+    EDGAR_SUBMISSIONS_SIDECAR_URL,
     EDGAR_SUBMISSIONS_URL,
     EDGAR_TICKERS_URL,
     edgar_headers,
@@ -171,6 +172,94 @@ def fetch_company_facts(cik: int) -> dict:
 def fetch_submissions(cik: int) -> dict:
     """SEC company submissions JSON used for filings lists + filings metadata."""
     return _get(EDGAR_SUBMISSIONS_URL.format(cik=cik))
+
+
+def filings_recent_parallel_block(filings: dict) -> dict:
+    """Return the dict holding parallel filing arrays (`form`, `filingDate`, …).
+
+    Live submissions nest these under ``filings[\"recent\"]``. Some fixtures omit
+    that wrapper and place the arrays on ``filings`` itself.
+    """
+    recent = filings.get("recent")
+    if isinstance(recent, dict):
+        form = recent.get("form")
+        fds = recent.get("filingDate")
+        if isinstance(form, list) and isinstance(fds, list):
+            return recent
+    return filings
+
+
+def submission_parallel_list(obj: dict, key: str) -> list:
+    """Normalize SEC parallel-array fields to a Python list."""
+    v = obj.get(key)
+    if v is None:
+        return []
+    return list(v) if isinstance(v, list) else [v]
+
+
+def form_filing_date_pairs_from_filings_blob(filings_obj: dict | None) -> list[tuple[str, str]]:
+    """``(form, filingDate_raw)`` rows from ``filings`` subtree (handles ``recent`` nesting)."""
+    if not isinstance(filings_obj, dict):
+        return []
+    block = filings_recent_parallel_block(filings_obj)
+    fh = submission_parallel_list(block, "form")
+    fds = submission_parallel_list(block, "filingDate")
+    n = min(len(fh), len(fds))
+    return [(str(fh[i]), str(fds[i])) for i in range(n)]
+
+
+# Rolling IV requests enough supplemental shards to approximate ~5y of periodic filings
+# when the primary payload is crowded by 8‑K etc. Tune via ``max_sidecars``.
+DEFAULT_SUBMISSION_SIDECARS_FOR_ROLLING = 20
+
+
+def submission_filings_form_dates_merged(
+    cik: int,
+    *,
+    max_sidecars: int = DEFAULT_SUBMISSION_SIDECARS_FOR_ROLLING,
+) -> tuple[list[str], list[str]]:
+    """Combine primary submissions ``recent`` rows with historical ``filings.files`` shards.
+
+    The SEC keeps roughly the latest thousand filing rows in ``recent``. Active issuers
+    can exhaust that window with marginal forms, hiding older ``10‑Q``/``10‑K`` anchors.
+    Supplemental JSON files reuse the same ``recent`` parallel-array schema.
+    """
+    root = fetch_submissions(cik)
+    filings_obj = root["filings"] if isinstance(root.get("filings"), dict) else {}
+    merged_pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def ingest(blob: dict | None) -> None:
+        for form_s, fds in form_filing_date_pairs_from_filings_blob(blob):
+            key = (form_s, (fds[:10] if fds else ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged_pairs.append((form_s, fds))
+
+    ingest(filings_obj)
+
+    files_meta = filings_obj.get("files")
+    if isinstance(files_meta, list) and max_sidecars > 0:
+        lim = max(0, min(int(max_sidecars), len(files_meta)))
+        for finfo in files_meta[:lim]:
+            if not isinstance(finfo, dict):
+                continue
+            name = finfo.get("name")
+            if not isinstance(name, str) or ".json" not in name.lower():
+                continue
+            side = _get(EDGAR_SUBMISSIONS_SIDECAR_URL.format(basename=name))
+            blob = (
+                side["filings"]
+                if isinstance(side.get("filings"), dict)
+                else (side if isinstance(side, dict) else None)
+            )
+            ingest(blob)
+
+    if not merged_pairs:
+        return [], []
+    fh_o, fds_o = zip(*merged_pairs)
+    return list(fh_o), list(fds_o)
 
 
 def _annual_rows(facts: dict, concept: str, unit: str = "USD") -> list[dict]:
@@ -331,8 +420,10 @@ def _latest_quarterly_shares(facts: dict) -> float:
     return 0.0
 
 
-def extract_shares_outstanding(facts: dict, cik: int | None = None) -> float:
-    """Return shares from EDGAR: latest 10-Q, else 10-K XBRL, else submissions JSON."""
+def extract_shares_outstanding(
+    facts: dict, cik: int | None = None, *, submissions_fallback: bool = True
+) -> float:
+    """Return shares from EDGAR: latest 10-Q, else 10-K XBRL, else optional submissions JSON."""
     tenq = _latest_quarterly_shares(facts)
     if tenq > 0:
         return tenq
@@ -341,7 +432,7 @@ def extract_shares_outstanding(facts: dict, cik: int | None = None) -> float:
     if rows:
         return _latest_value(rows)
     # Fallback: submissions endpoint exposes EntityCommonStockSharesOutstanding.
-    if cik is not None:
+    if cik is not None and submissions_fallback:
         try:
             sub = _get(EDGAR_SUBMISSIONS_URL.format(cik=cik))
             v = sub.get("entityCommonStockSharesOutstanding") or 0

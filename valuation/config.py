@@ -68,6 +68,8 @@ def equity_risk_premium() -> float:
 EDGAR_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 EDGAR_COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
 EDGAR_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
+# Supplemental filings JSON when ``recent`` exceeds ~1000 rows (basename from ``filings.files``).
+EDGAR_SUBMISSIONS_SIDECAR_URL = "https://data.sec.gov/submissions/{basename}"
 EDGAR_ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{accession_no_dashes}/{filename}"
 
 

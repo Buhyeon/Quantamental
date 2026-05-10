@@ -31,10 +31,19 @@ copy .env.example .env
 ### Streamlit dashboard (optional)
 
 Interactive charts for intrinsic vs market price, growth blend, optional WACC
-breakdown, and an FCF sensitivity heatmap.
+breakdown, and an FCF sensitivity heatmap. **Backtesting** (navigation: *Backtesting*)
+plots historical price against intrinsic value at a chosen **as-of** date: fundamentals
+use only EDGAR XBRL rows with `filed` on or before that date; **default growth excludes
+Yahoo** (not point-in-time); **WACC is manual** (live CAPM/auto-WACC is current data).
+The **Rolling IV** tab recomputes IV on successive **10-K / 10-Q filing dates**
+(anchors from submission `filingDate`); convergence stats there are **backward-looking**
+simulations. On **Basket**, an optional **maximum horizon**—either calendar days **or**
+trading sessions—adds a **hit within horizon** column plus a **conditional hit rate** whose
+denominator stays the **same valid-IV ticker set** while the numerator requires the first band
+touch to occur within that cap.
 
 ```bash
-streamlit run streamlit_app.py
+streamlit run main.py
 ```
 
 Serve from the **repository root** so `valuation` imports resolve. **`SEC_USER_AGENT`**
@@ -162,7 +171,8 @@ pytest valuation/tests -q
 
 ## Limitations / caveats
 
-- **WACC** is manual (no CAPM helper yet — same as milestone 1 scope).
+- **CLI** supports **`--auto-wacc`** (CAPM + book-structure debt); Streamlit **Backtesting**
+  uses sidebar **manual WACC** only.
 - **`--auto-growth` Yahoo fields** (`ticker.info`) are scraped summaries, not EDGAR;
   they often lag and can omit tickers Yahoo doesn’t summarize well.
 - **`--auto-wacc`**: debt is **book** value (not market value of bonds); **beta** is

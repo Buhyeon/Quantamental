@@ -353,3 +353,36 @@ def test_get_fundamentals_end_to_end_mocked():
     assert f.short_term_debt == 10_000.0
     assert f.cash == 50_000.0
     assert f.net_debt == 60_000.0  # 100k + 10k - 50k
+
+
+def test_submission_filings_form_dates_merged_pulls_sidecar_json():
+    primary = {
+        "filings": {
+            "recent": {"form": ["10-K"], "filingDate": ["2023-01-01"]},
+            "files": [{"name": "CIK0000000007-submissions-001.json"}],
+        }
+    }
+    archival = {
+        "filings": {
+            "recent": {
+                "form": ["10-Q", "10-K"],
+                "filingDate": ["2022-06-01", "2024-06-01"],
+            }
+        }
+    }
+
+    def fake_get(url, host_override=None):
+        if "submissions-001.json" in url:
+            return archival
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    with patch.object(edgar, "fetch_submissions", return_value=primary):
+        with patch.object(edgar, "_get", side_effect=fake_get):
+            fh, fds = edgar.submission_filings_form_dates_merged(7, max_sidecars=20)
+
+    assert len(fh) == 3
+    assert set(zip(fh, fds)) == {
+        ("10-K", "2023-01-01"),
+        ("10-Q", "2022-06-01"),
+        ("10-K", "2024-06-01"),
+    }

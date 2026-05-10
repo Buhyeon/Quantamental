@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Literal
 
 from valuation.data.edgar import fetch_submissions
@@ -32,6 +33,8 @@ def compute_growth_estimate(
     filings_block: dict | None = None,
     auto_growth_mode: AutoGrowthMode = "blended",
     fcf_cagr_window: int | None = 2,
+    include_yahoo_consensus: bool = True,
+    as_of: date | None = None,
 ) -> GrowthEstimate:
     """Gather growth candidates and blend into a :class:`GrowthEstimate`.
 
@@ -43,9 +46,17 @@ def compute_growth_estimate(
 
     ``fcf_cagr_window``: last N fiscal FCF points for CAGR (default ``2``).
     ``None`` or ``<= 0`` means full history (callers map CLI/UI ``0`` to ``None``).
+
+    ``include_yahoo_consensus``: set False for backtests (Yahoo is not point-in-time).
+
+    ``as_of``: when set, 8-K scan uses filing dates on or before this day only.
     """
     if auto_growth_mode == "consensus_only":
-        cands = list(yahoo_financial_consensus_candidates(ticker))
+        cands = (
+            list(yahoo_financial_consensus_candidates(ticker))
+            if include_yahoo_consensus
+            else []
+        )
         return blend_candidates(cands)
 
     if filings_block is None:
@@ -57,7 +68,10 @@ def compute_growth_estimate(
     if hist:
         cands.append(hist)
 
-    cands.extend(eight_k_guidance_candidates(cik, filings_block))
-    cands.extend(yahoo_financial_consensus_candidates(ticker))
+    cands.extend(
+        eight_k_guidance_candidates(cik, filings_block, as_of=as_of)
+    )
+    if include_yahoo_consensus:
+        cands.extend(yahoo_financial_consensus_candidates(ticker))
 
     return blend_candidates(cands)

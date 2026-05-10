@@ -7,6 +7,9 @@ a much heavier scrape that breaks frequently when Yahoo changes their HTML.
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
+import pandas as pd
 import yfinance as yf
 
 
@@ -73,3 +76,18 @@ def get_price_history(ticker: str, period: str = "5y"):
     if hist.empty:
         raise MarketDataError(f"No history available for {ticker!r} over {period}.")
     return hist
+
+
+def get_price_history_daterange(ticker: str, start: date, end: date) -> pd.Series:
+    """Daily close indexed by ``datetime.date``, ``start`` through ``end`` inclusive."""
+    if end < start:
+        raise MarketDataError("end must be >= start")
+    t = yf.Ticker(ticker)
+    hist = t.history(start=start.isoformat(), end=(end + timedelta(days=1)).isoformat())
+    if hist.empty:
+        raise MarketDataError(
+            f"No history for {ticker!r} from {start} to {end}."
+        )
+    s = hist["Close"].copy()
+    s.index = pd.Index([pd.Timestamp(ts).date() for ts in s.index])
+    return s
