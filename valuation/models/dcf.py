@@ -19,6 +19,8 @@ from __future__ import annotations
 import warnings
 from typing import TypedDict
 
+from valuation.config import DEFAULT_PROJECTION_YEARS
+
 
 class DCFResult(TypedDict):
     base_fcf: float
@@ -28,6 +30,7 @@ class DCFResult(TypedDict):
     projection_years: int
     projected_fcfs: list[float]
     pv_fcfs: list[float]
+    explicit_growth_rates: list[float]
     terminal_value: float
     pv_terminal_value: float
     enterprise_value: float
@@ -37,6 +40,28 @@ class DCFResult(TypedDict):
     intrinsic_value_per_share: float
 
 
+def explicit_yoy_rates_decay(
+    high_g: float,
+    terminal_g: float,
+    projection_years: int,
+    high_years: int = 3,
+) -> list[float]:
+    """YoY growth rates: ``high_g`` for the first ``high_years``, then linear fade to ``terminal_g``.
+
+    The last explicit year uses growth rate ``terminal_g``, matching Gordon perpetuity input.
+    """
+    if projection_years < 1:
+        raise ValueError("projection_years must be >= 1")
+    span = min(high_years, projection_years)
+    rates: list[float] = [high_g] * span
+    rem = projection_years - span
+    if rem <= 0:
+        return rates
+    for k in range(1, rem + 1):
+        rates.append(high_g + (terminal_g - high_g) * (k / rem))
+    return rates
+
+
 def intrinsic_value_per_share(
     base_fcf: float,
     growth_rate: float,
@@ -44,7 +69,7 @@ def intrinsic_value_per_share(
     terminal_growth: float,
     shares_outstanding: float,
     net_debt: float,
-    projection_years: int = 5,
+    projection_years: int = DEFAULT_PROJECTION_YEARS,
 ) -> DCFResult:
     """Compute intrinsic equity value per share via DCF.
 
@@ -57,7 +82,7 @@ def intrinsic_value_per_share(
         shares_outstanding: Diluted shares outstanding.
         net_debt: Total debt minus cash (negative = net cash). Subtracted from
             enterprise value to get equity value.
-        projection_years: Number of explicit-projection years (default 5).
+        projection_years: Number of explicit-projection years (default from config).
 
     Returns:
         A :class:`DCFResult` with every intermediate value exposed for auditing.
@@ -99,6 +124,7 @@ def intrinsic_value_per_share(
     enterprise_value = sum(pv_fcfs) + pv_terminal_value
     equity_value = enterprise_value - net_debt
     intrinsic = equity_value / shares_outstanding
+    explicit_rates = [growth_rate] * projection_years
 
     return DCFResult(
         base_fcf=base_fcf,
@@ -108,6 +134,80 @@ def intrinsic_value_per_share(
         projection_years=projection_years,
         projected_fcfs=projected_fcfs,
         pv_fcfs=pv_fcfs,
+        explicit_growth_rates=explicit_rates,
+        terminal_value=terminal_value,
+        pv_terminal_value=pv_terminal_value,
+        enterprise_value=enterprise_value,
+        net_debt=net_debt,
+        equity_value=equity_value,
+        shares_outstanding=shares_outstanding,
+        intrinsic_value_per_share=intrinsic,
+    )
+
+
+def intrinsic_value_per_share_explicit_decay(
+    base_fcf: float,
+    growth_rate: float,
+    wacc: float,
+    terminal_growth: float,
+    shares_outstanding: float,
+    net_debt: float,
+    projection_years: int = DEFAULT_PROJECTION_YEARS,
+    high_growth_years: int = 3,
+) -> DCFResult:
+    """DCF with explicit YoY rates: ``high_growth_years`` at ``growth_rate``, then linear decay to ``terminal_growth``."""
+    if wacc <= terminal_growth:
+        raise ValueError(
+            f"WACC ({wacc:.4f}) must exceed terminal_growth ({terminal_growth:.4f}); "
+            "otherwise terminal value diverges to infinity."
+        )
+    if projection_years < 1:
+        raise ValueError("projection_years must be >= 1")
+    if shares_outstanding <= 0:
+        raise ValueError("shares_outstanding must be > 0")
+
+    rates = explicit_yoy_rates_decay(
+        growth_rate, terminal_growth, projection_years, high_years=high_growth_years
+    )
+    if max(rates) > 0.25:
+        warnings.warn(
+            f"Peak explicit growth {max(rates):.1%} is aggressive (>25%); "
+            "DCF results are highly sensitive.",
+            stacklevel=2,
+        )
+    if wacc < 0.06:
+        warnings.warn(
+            f"WACC {wacc:.1%} is unusually low (<6%); intrinsic value will be inflated.",
+            stacklevel=2,
+        )
+
+    projected_fcfs: list[float] = []
+    pv_fcfs: list[float] = []
+    fcf_prev = base_fcf
+    for t in range(projection_years):
+        g = rates[t]
+        fcf_t = fcf_prev * (1 + g)
+        projected_fcfs.append(fcf_t)
+        pv_fcfs.append(fcf_t / (1 + wacc) ** (t + 1))
+        fcf_prev = fcf_t
+
+    fcf_final = projected_fcfs[-1]
+    terminal_value = fcf_final * (1 + terminal_growth) / (wacc - terminal_growth)
+    pv_terminal_value = terminal_value / (1 + wacc) ** projection_years
+
+    enterprise_value = sum(pv_fcfs) + pv_terminal_value
+    equity_value = enterprise_value - net_debt
+    intrinsic = equity_value / shares_outstanding
+
+    return DCFResult(
+        base_fcf=base_fcf,
+        growth_rate=growth_rate,
+        wacc=wacc,
+        terminal_growth=terminal_growth,
+        projection_years=projection_years,
+        projected_fcfs=projected_fcfs,
+        pv_fcfs=pv_fcfs,
+        explicit_growth_rates=rates,
         terminal_value=terminal_value,
         pv_terminal_value=pv_terminal_value,
         enterprise_value=enterprise_value,

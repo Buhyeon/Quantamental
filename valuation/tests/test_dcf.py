@@ -10,7 +10,11 @@ import math
 
 import pytest
 
-from valuation.models.dcf import intrinsic_value_per_share
+from valuation.models.dcf import (
+    explicit_yoy_rates_decay,
+    intrinsic_value_per_share,
+    intrinsic_value_per_share_explicit_decay,
+)
 
 
 def test_zero_growth_perpetuity_matches_closed_form():
@@ -124,3 +128,54 @@ def test_aggressive_growth_emits_warning():
             base_fcf=100.0, growth_rate=0.30, wacc=0.10, terminal_growth=0.02,
             shares_outstanding=1.0, net_debt=0.0,
         )
+
+
+def test_explicit_yoy_rates_decay_shape():
+    r = explicit_yoy_rates_decay(0.10, 0.02, projection_years=5, high_years=3)
+    assert len(r) == 5
+    assert r[:3] == [0.10, 0.10, 0.10]
+    assert math.isclose(r[3], 0.06, rel_tol=1e-12)
+    assert math.isclose(r[4], 0.02, rel_tol=1e-12)
+
+
+def test_explicit_decay_matches_constant_when_terminal_equals_high():
+    g = t = 0.05
+    r_decay = intrinsic_value_per_share_explicit_decay(
+        base_fcf=100.0,
+        growth_rate=g,
+        wacc=0.10,
+        terminal_growth=t,
+        shares_outstanding=1.0,
+        net_debt=0.0,
+        projection_years=5,
+    )
+    r_const = intrinsic_value_per_share(
+        base_fcf=100.0,
+        growth_rate=g,
+        wacc=0.10,
+        terminal_growth=t,
+        shares_outstanding=1.0,
+        net_debt=0.0,
+        projection_years=5,
+    )
+    assert math.isclose(
+        r_decay["intrinsic_value_per_share"],
+        r_const["intrinsic_value_per_share"],
+        rel_tol=1e-9,
+    )
+
+
+def test_explicit_decay_pv_plus_tv_equals_ev():
+    r = intrinsic_value_per_share_explicit_decay(
+        base_fcf=100.0,
+        growth_rate=0.08,
+        wacc=0.10,
+        terminal_growth=0.02,
+        shares_outstanding=10.0,
+        net_debt=50.0,
+        projection_years=5,
+    )
+    assert len(r["explicit_growth_rates"]) == 5
+    assert math.isclose(
+        sum(r["pv_fcfs"]) + r["pv_terminal_value"], r["enterprise_value"], rel_tol=1e-9
+    )

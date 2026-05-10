@@ -53,7 +53,7 @@ with st.sidebar:
     with st.expander("Global Assumptions", expanded=True):
         growth_rate = st.slider("Flat Growth Rate", 0.0, 0.50, 0.15, 0.01)
         wacc = st.slider("Discount Rate (WACC)", 0.05, 0.20, float(DEFAULT_WACC), 0.01)
-        terminal = st.slider("Terminal Growth", 0.0, 0.05, float(DEFAULT_TERMINAL_GROWTH), 0.005)
+        terminal = st.slider("Terminal Growth", 0.0, 0.06, float(DEFAULT_TERMINAL_GROWTH), 0.005)
         fcf_avg_years = st.number_input("FCF Avg Years", 1, 10, DEFAULT_FCF_AVG_YEARS)
 
     run_screener = st.button("Run Screener", type="primary", use_container_width=True)

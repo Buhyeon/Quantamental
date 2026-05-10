@@ -19,10 +19,10 @@ from valuation.config import (
 )
 from valuation.data.edgar import EdgarError, get_fundamentals
 from valuation.data.market import MarketDataError, get_current_price
-from valuation.growth.estimate import compute_growth_estimate
+from valuation.growth.estimate import AutoGrowthMode, compute_growth_estimate
 from valuation.growth.types import GuidanceCandidate, GrowthEstimate
-from valuation.models.dcf import intrinsic_value_per_share
-from valuation.models.eps_dcf import intrinsic_price_from_eps
+from valuation.models.dcf import intrinsic_value_per_share, intrinsic_value_per_share_explicit_decay
+from valuation.models.eps_dcf import intrinsic_price_from_eps, intrinsic_price_from_eps_explicit_decay
 from valuation.models.wacc_estimate import WACCBreakdown, estimate_wacc
 from valuation.models.sensitivity import (
     format_sensitivity_grid_table,
@@ -135,8 +135,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--auto-growth",
         action="store_true",
         help=(
-            "Blend growth from EDGAR 8-K, Yahoo consensus (yfinance summary), CAGR. "
-            "No transcript or LLM calls. `--growth` is ignored when enabled."
+            "Estimated growth (`--growth` ignored): blended sources or Yahoo-only via "
+            "`--auto-growth-mode`. Explicit forecast uses decay after year 3."
+        ),
+    )
+    p.add_argument(
+        "--auto-growth-mode",
+        choices=("blended", "consensus"),
+        default="blended",
+        help=(
+            "blended: trailing FCF CAGR window + 8-K + Yahoo. "
+            "consensus: Yahoo ticker.info EPS/revenue only."
+        ),
+    )
+    p.add_argument(
+        "--fcf-cagr-years",
+        type=int,
+        default=2,
+        metavar="N",
+        help=(
+            "FY points for FCF CAGR in blended mode (default 2). "
+            "Use 0 for full EDGAR FY history."
         ),
     )
     p.add_argument(
@@ -182,7 +201,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--terminal",
         type=float,
         default=DEFAULT_TERMINAL_GROWTH,
-        help=f"Terminal/perpetuity growth (default {DEFAULT_TERMINAL_GROWTH})",
+        help=(
+            "Terminal/perpetuity growth and explicit-period decay target "
+            f"(default {DEFAULT_TERMINAL_GROWTH})."
+        ),
     )
     p.add_argument(
         "--years",
@@ -290,6 +312,8 @@ def _run_one_ticker(
     base_assumptions: DCFAssumptions,
     *,
     auto_growth: bool,
+    auto_growth_mode: AutoGrowthMode,
+    fcf_cagr_window: int | None,
     manual_growth: float,
     eps_growth_override: float | None,
     fcf_avg_years: int,
@@ -314,17 +338,14 @@ def _run_one_ticker(
     need_fcf = model_mode in ("fcf", "both")
     need_eps = model_mode in ("eps", "both")
 
-    if auto_growth and not f.fcf_history:
-        print(
-            f"--auto-growth requires trailing FCF — none found on EDGAR for {ticker}.",
-            file=sys.stderr,
-        )
-        return 1
-
     growth_estimate: GrowthEstimate | None = None
     if auto_growth:
         growth_estimate = compute_growth_estimate(
-            ticker=ticker, cik=f.cik, fcf_values=f.fcf_values
+            ticker=ticker,
+            cik=f.cik,
+            fcf_values=f.fcf_values,
+            auto_growth_mode=auto_growth_mode,
+            fcf_cagr_window=fcf_cagr_window,
         )
         growth_fcf = growth_estimate.growth_rate
     else:
@@ -398,6 +419,7 @@ def _run_one_ticker(
         _print_auto_wacc(wacc_breakdown)
         print()
 
+    decay_note = " (explicit decay → terminal)" if auto_growth else ""
     print(
         f"  DCF inputs: "
         + (f"growth(FCF/EPS-shared)={growth_fcf:.2%}  "
@@ -405,33 +427,54 @@ def _run_one_ticker(
            else f"growth(FCF)={growth_fcf:.2%}  growth(EPS)={growth_eps:.2%}  ")
         + f"wacc={assumptions.wacc:.2%}  terminal={assumptions.terminal_growth:.2%} "
         f"explicit_years={assumptions.projection_years}; model={model_mode.upper()}"
+        f"{decay_note}"
     )
 
     iv_fcf = iv_eps = consensus = None
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         if need_fcf:
-            r_fcf = intrinsic_value_per_share(
-                base_fcf=base_fcf,
-                growth_rate=growth_fcf,
-                wacc=assumptions.wacc,
-                terminal_growth=assumptions.terminal_growth,
-                shares_outstanding=f.shares_outstanding,
-                net_debt=f.net_debt,
-                projection_years=assumptions.projection_years,
-            )
+            if auto_growth:
+                r_fcf = intrinsic_value_per_share_explicit_decay(
+                    base_fcf=base_fcf,
+                    growth_rate=growth_fcf,
+                    wacc=assumptions.wacc,
+                    terminal_growth=assumptions.terminal_growth,
+                    shares_outstanding=f.shares_outstanding,
+                    net_debt=f.net_debt,
+                    projection_years=assumptions.projection_years,
+                )
+            else:
+                r_fcf = intrinsic_value_per_share(
+                    base_fcf=base_fcf,
+                    growth_rate=growth_fcf,
+                    wacc=assumptions.wacc,
+                    terminal_growth=assumptions.terminal_growth,
+                    shares_outstanding=f.shares_outstanding,
+                    net_debt=f.net_debt,
+                    projection_years=assumptions.projection_years,
+                )
             iv_fcf = float(r_fcf["intrinsic_value_per_share"])
             print(f"  FCF intrinsic/share:       ${iv_fcf:,.2f}")
             print(f"    EV:                      {_fmt_money(r_fcf['enterprise_value'])}")
             print(f"    Equity:                  {_fmt_money(r_fcf['equity_value'])}")
         if need_eps:
-            r_eps = intrinsic_price_from_eps(
-                base_eps=base_eps,
-                growth_rate=growth_eps,
-                wacc=assumptions.wacc,
-                terminal_growth=assumptions.terminal_growth,
-                projection_years=assumptions.projection_years,
-            )
+            if auto_growth:
+                r_eps = intrinsic_price_from_eps_explicit_decay(
+                    base_eps=base_eps,
+                    growth_rate=growth_eps,
+                    wacc=assumptions.wacc,
+                    terminal_growth=assumptions.terminal_growth,
+                    projection_years=assumptions.projection_years,
+                )
+            else:
+                r_eps = intrinsic_price_from_eps(
+                    base_eps=base_eps,
+                    growth_rate=growth_eps,
+                    wacc=assumptions.wacc,
+                    terminal_growth=assumptions.terminal_growth,
+                    projection_years=assumptions.projection_years,
+                )
             iv_eps = float(r_eps["intrinsic_price_per_share"])
             print(f"  EPS intrinsic/share (direct): ${iv_eps:,.2f}")
 
@@ -471,6 +514,7 @@ def _run_one_ticker(
             growth_half_width=sens_growth_width,
             wacc_half_width=sens_wacc_width,
             steps=max(1, sens_steps),
+            use_explicit_decay=auto_growth,
         )
         print()
         print("  FCF sensitivity (USD/sh intrinsic, growth-rows x WACC-cols)")
@@ -497,6 +541,7 @@ def _run_one_ticker(
             wacc_half_width=mc_wacc_width,
             terminal_half_width=mc_terminal_width,
             rng=rng,
+            use_explicit_decay=auto_growth,
         )
         print()
         sfx = f", seed={mc_seed}" if mc_seed is not None else ""
@@ -535,6 +580,17 @@ def run(argv: list[str] | None = None) -> int:
         print("`--sens-steps` >= 1", file=sys.stderr)
         return 2
 
+    if args.fcf_cagr_years < 0:
+        print("`--fcf-cagr-years` must be >= 0", file=sys.stderr)
+        return 2
+
+    fcf_window: int | None = (
+        None if args.fcf_cagr_years == 0 else int(args.fcf_cagr_years)
+    )
+    ag_mode: AutoGrowthMode = (
+        "consensus_only" if args.auto_growth_mode == "consensus" else "blended"
+    )
+
     ec = 0
     tickers = [t.upper() for t in args.ticker]
 
@@ -546,6 +602,8 @@ def run(argv: list[str] | None = None) -> int:
             tk,
             assumptions,
             auto_growth=args.auto_growth,
+            auto_growth_mode=ag_mode,
+            fcf_cagr_window=fcf_window,
             manual_growth=args.growth,
             eps_growth_override=args.eps_growth,
             fcf_avg_years=args.fcf_avg_years,

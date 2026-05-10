@@ -38,8 +38,8 @@ _strip_bom_prefixed_env_keys()
 # DCF defaults. Overrideable via CLI flags or by passing kwargs to the model.
 DEFAULT_GROWTH_RATE: float = 0.08
 DEFAULT_WACC: float = 0.09
-DEFAULT_TERMINAL_GROWTH: float = 0.025
-DEFAULT_PROJECTION_YEARS: int = 5
+DEFAULT_TERMINAL_GROWTH: float = 0.034
+DEFAULT_PROJECTION_YEARS: int = 10
 # When 10-Q TTM bridging is unavailable, `--fcf-avg-years` averages trailing FY
 # 10-K anchors (default 1 = latest FY only; use 3+ for smoothed averages).
 DEFAULT_FCF_AVG_YEARS: int = 1

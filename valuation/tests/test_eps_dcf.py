@@ -7,7 +7,10 @@ import warnings
 
 import pytest
 
-from valuation.models.eps_dcf import intrinsic_price_from_eps
+from valuation.models.eps_dcf import (
+    intrinsic_price_from_eps,
+    intrinsic_price_from_eps_explicit_decay,
+)
 
 
 def test_eps_zero_growth_perpetuity_shape():
@@ -47,3 +50,21 @@ def test_nonpositive_eps_warns(bad_eps):
             wacc=0.11,
             terminal_growth=0.02,
         )
+
+
+def test_eps_explicit_decay_pv_identity():
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        r = intrinsic_price_from_eps_explicit_decay(
+            base_eps=2.0,
+            growth_rate=0.05,
+            wacc=0.10,
+            terminal_growth=0.02,
+            projection_years=4,
+        )
+    assert len(r["explicit_growth_rates"]) == 4
+    assert math.isclose(
+        sum(r["pv_eps"]) + r["pv_terminal_value_per_share"],
+        r["intrinsic_price_per_share"],
+        rel_tol=1e-9,
+    )

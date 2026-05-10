@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import random
 
-from valuation.models.dcf import intrinsic_value_per_share
+from valuation.models.dcf import intrinsic_value_per_share, intrinsic_value_per_share_explicit_decay
 from valuation.models import sensitivity
 
 
@@ -55,6 +55,35 @@ def test_sensitivity_center_cell_matches_direct_dcf():
     )
     mid_iv = grid.intrinsic_per_share[1][1]
     assert math.isclose(mid_iv, direct, rel_tol=1e-9)
+
+
+def test_sensitivity_decay_center_matches_explicit_decay():
+    base_fcf = 100.0
+    g, w, t = 0.08, 0.09, 0.025
+    yrs = 5
+    direct = intrinsic_value_per_share_explicit_decay(
+        base_fcf=base_fcf,
+        growth_rate=g,
+        wacc=w,
+        terminal_growth=t,
+        shares_outstanding=1.0,
+        net_debt=0.0,
+        projection_years=yrs,
+    )["intrinsic_value_per_share"]
+    grid = sensitivity.intrinsic_sensitivity_grid(
+        base_fcf=base_fcf,
+        shares_outstanding=1.0,
+        net_debt=0.0,
+        projection_years=yrs,
+        center_growth=g,
+        center_wacc=w,
+        terminal_growth=t,
+        growth_half_width=0.03,
+        wacc_half_width=0.02,
+        steps=3,
+        use_explicit_decay=True,
+    )
+    assert math.isclose(grid.intrinsic_per_share[1][1], direct, rel_tol=1e-9)
 
 
 def test_monte_carlo_all_valid_with_stable_ranges():

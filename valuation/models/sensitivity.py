@@ -50,14 +50,23 @@ def intrinsic_sensitivity_grid(
     steps: int = 3,
     growth_min: float = 0.0,
     wacc_min_above_terminal: float = 0.005,
+    use_explicit_decay: bool = False,
+    high_growth_years: int = 3,
 ) -> IntrinsicSensitivityGrid:
     """2D grid: vary growth × WACC; hold terminal growth fixed.
 
     ``growth_half_width`` / ``wacc_half_width`` expand from the center in each direction;
     Growth is clipped to ``>= growth_min``.
     Each WACC is clipped to ``> terminal_growth + wacc_min_above_terminal``.
+
+    When ``use_explicit_decay`` is True, each cell uses
+    :func:`valuation.models.dcf.intrinsic_value_per_share_explicit_decay` with the
+    row growth as the high-phase rate and ``terminal_growth`` as the fade target.
     """
-    from valuation.models.dcf import intrinsic_value_per_share
+    from valuation.models.dcf import (
+        intrinsic_value_per_share,
+        intrinsic_value_per_share_explicit_decay,
+    )
 
     g_lo = max(growth_min, center_growth - growth_half_width)
     g_hi = center_growth + growth_half_width
@@ -76,15 +85,27 @@ def intrinsic_sensitivity_grid(
                 if w <= terminal_growth:
                     row.append(float("nan"))
                     continue
-                r = intrinsic_value_per_share(
-                    base_fcf=base_fcf,
-                    growth_rate=g,
-                    wacc=w,
-                    terminal_growth=terminal_growth,
-                    shares_outstanding=shares_outstanding,
-                    net_debt=net_debt,
-                    projection_years=projection_years,
-                )
+                if use_explicit_decay:
+                    r = intrinsic_value_per_share_explicit_decay(
+                        base_fcf=base_fcf,
+                        growth_rate=g,
+                        wacc=w,
+                        terminal_growth=terminal_growth,
+                        shares_outstanding=shares_outstanding,
+                        net_debt=net_debt,
+                        projection_years=projection_years,
+                        high_growth_years=high_growth_years,
+                    )
+                else:
+                    r = intrinsic_value_per_share(
+                        base_fcf=base_fcf,
+                        growth_rate=g,
+                        wacc=w,
+                        terminal_growth=terminal_growth,
+                        shares_outstanding=shares_outstanding,
+                        net_debt=net_debt,
+                        projection_years=projection_years,
+                    )
                 row.append(r["intrinsic_value_per_share"])
             matrix.append(row)
     return IntrinsicSensitivityGrid(
@@ -137,13 +158,21 @@ def monte_carlo_intrinsic(
     terminal_half_width: float = 0.0075,
     rng: random.Random | None = None,
     max_attempts_factor: int = 50,
+    use_explicit_decay: bool = False,
+    high_growth_years: int = 3,
 ) -> MonteCarloSummary:
     """Sample growth, WACC, and terminal growth uniformly around centers; collect IV/share.
 
     Each draw enforces ``wacc > terminal_growth`` (re-samples up to
     ``n_samples * max_attempts_factor`` attempts before giving up).
+
+    With ``use_explicit_decay``, high-phase growth is sampled while terminal stays the
+    sampled perpetuity rate (same as decay endpoint).
     """
-    from valuation.models.dcf import intrinsic_value_per_share
+    from valuation.models.dcf import (
+        intrinsic_value_per_share,
+        intrinsic_value_per_share_explicit_decay,
+    )
 
     rng = rng or random.Random()
     values: list[float] = []
@@ -170,15 +199,27 @@ def monte_carlo_intrinsic(
             if w <= term:
                 continue
             try:
-                r = intrinsic_value_per_share(
-                    base_fcf=base_fcf,
-                    growth_rate=g,
-                    wacc=w,
-                    terminal_growth=term,
-                    shares_outstanding=shares_outstanding,
-                    net_debt=net_debt,
-                    projection_years=projection_years,
-                )
+                if use_explicit_decay:
+                    r = intrinsic_value_per_share_explicit_decay(
+                        base_fcf=base_fcf,
+                        growth_rate=g,
+                        wacc=w,
+                        terminal_growth=term,
+                        shares_outstanding=shares_outstanding,
+                        net_debt=net_debt,
+                        projection_years=projection_years,
+                        high_growth_years=high_growth_years,
+                    )
+                else:
+                    r = intrinsic_value_per_share(
+                        base_fcf=base_fcf,
+                        growth_rate=g,
+                        wacc=w,
+                        terminal_growth=term,
+                        shares_outstanding=shares_outstanding,
+                        net_debt=net_debt,
+                        projection_years=projection_years,
+                    )
             except ValueError:
                 continue
             values.append(r["intrinsic_value_per_share"])

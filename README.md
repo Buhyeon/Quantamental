@@ -151,7 +151,7 @@ valuation/
 | Manual `--growth` | 8 % | Tune per company risk |
 | `--wacc` | 9 % | Manual only; use **`--auto-wacc`** for CAPM-based WACC |
 | Terminal `g` | 2.5 % | Must stay `< wacc` |
-| Horizon `--years` | 5 yrs | Matches original spec |
+| Horizon `--years` | 10 yrs | Default explicit forecast length |
 | Base FCF / EPS | **TTM** from `10-Q` when possible; else trailing **FY** average via `--fcf-avg-years` (default **1** = latest FY) | Shared by FCF **and** EPS |
 
 ## Running tests

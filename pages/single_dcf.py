@@ -23,9 +23,9 @@ from valuation.config import (
 )
 from valuation.data.edgar import EdgarError, Fundamentals, get_fundamentals
 from valuation.data.market import MarketDataError, get_current_price
-from valuation.growth.estimate import compute_growth_estimate
-from valuation.models.dcf import intrinsic_value_per_share
-from valuation.models.eps_dcf import intrinsic_price_from_eps
+from valuation.growth.estimate import AutoGrowthMode, compute_growth_estimate
+from valuation.models.dcf import intrinsic_value_per_share, intrinsic_value_per_share_explicit_decay
+from valuation.models.eps_dcf import intrinsic_price_from_eps, intrinsic_price_from_eps_explicit_decay
 from valuation.models.sensitivity import intrinsic_sensitivity_grid
 from valuation.models.wacc_estimate import estimate_wacc
 
@@ -83,6 +83,25 @@ with st.sidebar:
     
     with st.expander("Growth", expanded=True):
         auto_growth = st.checkbox("Auto-growth", value=True)
+        auto_mode_label = st.radio(
+            "Auto-growth source",
+            ("Blended (FCF CAGR + 8-K + Yahoo)", "Consensus only (Yahoo)"),
+            index=0,
+            disabled=not auto_growth,
+        )
+        auto_growth_mode: AutoGrowthMode = (
+            "consensus_only"
+            if auto_mode_label.startswith("Consensus")
+            else "blended"
+        )
+        fcf_cagr_fy_window = st.number_input(
+            "FCF CAGR FY window (blended)",
+            min_value=0,
+            max_value=30,
+            value=2,
+            disabled=not auto_growth or auto_growth_mode == "consensus_only",
+            help="Number of trailing fiscal years for FCF CAGR. 0 = full EDGAR history.",
+        )
         if auto_growth:
             growth_manual = DEFAULT_GROWTH_RATE
         else:
@@ -101,7 +120,14 @@ with st.sidebar:
         else:
             wacc_val = st.slider("Manual WACC", 0.02, 0.30, 0.08, 0.0025, "%.4f")
         
-        terminal = st.slider("Terminal Growth", 0.0, 0.05, float(DEFAULT_TERMINAL_GROWTH), 0.0025, "%.4f")
+        terminal = st.slider(
+            "Terminal growth (perpetuity + decay target)",
+            0.0,
+            0.06,
+            float(DEFAULT_TERMINAL_GROWTH),
+            0.001,
+            "%.4f",
+        )
         projection_years = st.number_input("Projection Years", 1, 15, DEFAULT_PROJECTION_YEARS)
 
     with st.expander("Sensitivity Settings"):
@@ -136,8 +162,15 @@ assumptions = DCFAssumptions(
 )
 
 growth_est = None
+fcf_cagr_window = None if int(fcf_cagr_fy_window) == 0 else int(fcf_cagr_fy_window)
 if auto_growth:
-    growth_est = compute_growth_estimate(ticker=ticker, cik=f.cik, fcf_values=f.fcf_values)
+    growth_est = compute_growth_estimate(
+        ticker=ticker,
+        cik=f.cik,
+        fcf_values=f.fcf_values,
+        auto_growth_mode=auto_growth_mode,
+        fcf_cagr_window=fcf_cagr_window,
+    )
     growth_fcf = growth_est.growth_rate
     assumptions = replace(assumptions, growth_rate=growth_fcf)
 else:
@@ -183,21 +216,41 @@ with tab1:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             if model_mode in ("fcf", "both"):
-                r_fcf = intrinsic_value_per_share(
-                    base_fcf=base_fcf, growth_rate=growth_fcf, wacc=float(assumptions.wacc),
-                    terminal_growth=float(terminal), shares_outstanding=f.shares_outstanding,
-                    net_debt=f.net_debt, projection_years=int(projection_years)
-                )
+                if auto_growth:
+                    r_fcf = intrinsic_value_per_share_explicit_decay(
+                        base_fcf=base_fcf,
+                        growth_rate=growth_fcf,
+                        wacc=float(assumptions.wacc),
+                        terminal_growth=float(terminal),
+                        shares_outstanding=f.shares_outstanding,
+                        net_debt=f.net_debt,
+                        projection_years=int(projection_years),
+                    )
+                else:
+                    r_fcf = intrinsic_value_per_share(
+                        base_fcf=base_fcf, growth_rate=growth_fcf, wacc=float(assumptions.wacc),
+                        terminal_growth=float(terminal), shares_outstanding=f.shares_outstanding,
+                        net_debt=f.net_debt, projection_years=int(projection_years)
+                    )
                 iv_fcf = float(r_fcf["intrinsic_value_per_share"])
                 st.metric("FCF Intrinsic / Share", f"${iv_fcf:,.2f}")
                 dcf_cols.append(("FCF Model", iv_fcf))
             else: iv_fcf = None
 
             if model_mode in ("eps", "both"):
-                r_eps = intrinsic_price_from_eps(
-                    base_eps=base_eps, growth_rate=float(growth_eps), wacc=float(assumptions.wacc),
-                    terminal_growth=float(terminal), projection_years=int(projection_years)
-                )
+                if auto_growth:
+                    r_eps = intrinsic_price_from_eps_explicit_decay(
+                        base_eps=base_eps,
+                        growth_rate=float(growth_eps),
+                        wacc=float(assumptions.wacc),
+                        terminal_growth=float(terminal),
+                        projection_years=int(projection_years),
+                    )
+                else:
+                    r_eps = intrinsic_price_from_eps(
+                        base_eps=base_eps, growth_rate=float(growth_eps), wacc=float(assumptions.wacc),
+                        terminal_growth=float(terminal), projection_years=int(projection_years)
+                    )
                 iv_eps = float(r_eps["intrinsic_price_per_share"])
                 st.metric("EPS Intrinsic / Share", f"${iv_eps:,.2f}")
                 dcf_cols.append(("EPS Model", iv_eps))
@@ -256,7 +309,8 @@ with tab3:
             net_debt=f.net_debt, projection_years=int(projection_years),
             center_growth=float(growth_fcf), center_wacc=float(assumptions.wacc),
             terminal_growth=float(terminal), growth_half_width=float(grid_g_half),
-            wacc_half_width=float(grid_w_half), steps=int(grid_steps)
+            wacc_half_width=float(grid_w_half), steps=int(grid_steps),
+            use_explicit_decay=bool(auto_growth),
         )
         hm_data = [{"Growth": f"{g:.1%}", "WACC": f"{w:.1%}", "IV": v}
                    for i, g in enumerate(grid.growth_axis)
@@ -272,4 +326,8 @@ with tab3:
         st.altair_chart(heat, use_container_width=True)
 
 st.divider()
-st.caption(f"Config: WACC={assumptions.wacc:.2%}, Terminal={terminal:.2%}, Growth FCF={growth_fcf:.2%}")
+_path = "explicit decay (3y high → terminal)" if auto_growth else "constant explicit growth"
+st.caption(
+    f"Config: WACC={assumptions.wacc:.2%}, Terminal={terminal:.2%}, "
+    f"Growth FCF={growth_fcf:.2%}, explicit path={_path}"
+)
