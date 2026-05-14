@@ -33,9 +33,11 @@ copy .env.example .env
 Interactive charts for intrinsic vs market price, growth blend, optional WACC
 breakdown, and an FCF sensitivity heatmap. **Backtesting** (navigation: *Backtesting*)
 plots historical price against intrinsic value at a chosen **as-of** date: fundamentals
-use only EDGAR XBRL rows with `filed` on or before that date; **default growth excludes
-Yahoo** (not point-in-time); **WACC is manual** (live CAPM/auto-WACC is current data).
-The **Rolling IV** tab recomputes IV on successive **10-K / 10-Q filing dates**
+use only EDGAR XBRL rows with `filed` on or before that date. Sidebar **growth** matches
+Single Stock DCF (**Mixed**, **Blended FCF** as SEC-only trailing FCF, or **EPS** via Yahoo);
+**Mixed** / **EPS** pull live Yahoo fields (not point-in-time for history). **Auto-WACC**
+(sidebar, optional) uses live price and latest fundamentals (also not as-of that date), or
+set **manual WACC**. The **Rolling IV** tab recomputes IV on successive **10-K / 10-Q filing dates**
 (anchors from submission `filingDate`); convergence stats there are **backward-looking**
 simulations. On **Basket**, an optional **maximum horizon**—either calendar days **or**
 trading sessions—adds a **hit within horizon** column plus a **conditional hit rate** whose
@@ -54,7 +56,7 @@ still required in `.env` for EDGAR.
 | Key | Purpose |
 | --- | ------- |
 | `SEC_USER_AGENT` | **Mandatory** EDGAR contact string (`Full Name email@fqdn`) |
-| `EQUITY_RISK_PREMIUM` | Optional decimal ERP for `--auto-wacc` CAPM (default **0.055**) |
+| `EQUITY_RISK_PREMIUM` | Optional decimal ERP for `--auto-wacc` CAPM (default **0.05**) |
 
 ## Usage
 
@@ -77,7 +79,7 @@ python -m valuation AAPL MSFT GOOGL --auto-growth
 ### Auto WACC (CAPM + book capital structure)
 
 Uses **10Y Treasury (^TNX)** as **R<sub>f</sub>**, **Yahoo beta** from `ticker.info`, and
-**ERP** (default 5.5%, overridable via **`EQUITY_RISK_PREMIUM`**). **Cost of debt**
+**ERP** (default 5%, overridable via **`EQUITY_RISK_PREMIUM`**). **Cost of debt**
 prefers **interest expense ÷ total debt** from the latest FY **10-K**; otherwise
 **R<sub>f</sub> + spread**. Weights: **E = price × shares**, **D = book liabilities**
 (EDGAR). **`--wacc` is ignored when `--auto-wacc` is set.**
@@ -172,7 +174,7 @@ pytest valuation/tests -q
 ## Limitations / caveats
 
 - **CLI** supports **`--auto-wacc`** (CAPM + book-structure debt); Streamlit **Backtesting**
-  uses sidebar **manual WACC** only.
+  uses the same sidebar **Auto-WACC** or **manual WACC** (not CLI flags).
 - **`--auto-growth` Yahoo fields** (`ticker.info`) are scraped summaries, not EDGAR;
   they often lag and can omit tickers Yahoo doesn’t summarize well.
 - **`--auto-wacc`**: debt is **book** value (not market value of bonds); **beta** is

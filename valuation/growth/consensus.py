@@ -11,9 +11,9 @@ import yfinance as yf
 
 from valuation.growth.types import GuidanceCandidate
 
-# Keep raw Yahoo decimals reasonable before blending (final clip remains in blend).
+# Keep raw Yahoo decimals reasonable before blending (estimate layer may clip again).
 _CONS_CLIP_LO = -0.15
-_CONS_CLIP_HI = 0.85
+_CONS_CLIP_HI = 1.00
 
 
 def _first_positive(info: dict[str, Any], keys: tuple[str, ...]) -> float | None:
@@ -99,3 +99,42 @@ def yahoo_financial_consensus_candidates(ticker: str) -> list[GuidanceCandidate]
         )
 
     return out
+
+
+def yahoo_one_year_eps_growth_for_high_phase(ticker: str) -> tuple[float, str]:
+    """Implied 1y EPS growth from Yahoo ``forwardEps`` vs trailing; used as the constant high-phase rate.
+
+    yfinance exposes roughly one forward horizon; the DCF applies the same rate for the
+    first three high-growth years before the linear fade.
+    """
+    cands = yahoo_financial_consensus_candidates(ticker)
+    eps_c = next((c for c in cands if c.metric == "eps"), None)
+    if eps_c is None:
+        raise ValueError(
+            "Yahoo EPS forward growth unavailable (need forwardEps/epsForward and trailing EPS in ticker.info)."
+        )
+    return float(eps_c.growth_rate), eps_c.snippet or "yahoo forward vs trailing EPS"
+
+
+def yahoo_one_year_mixed_growth_for_high_phase(ticker: str) -> tuple[float, str]:
+    """Average of Yahoo 1y EPS-implied growth and ``revenueGrowth`` when both exist; else whichever exists.
+
+    Same single horizon is reused for the model's three-year high-growth leg.
+    """
+    cands = yahoo_financial_consensus_candidates(ticker)
+    eps_g = next((c.growth_rate for c in cands if c.metric == "eps"), None)
+    rev_g = next((c.growth_rate for c in cands if c.metric == "revenue"), None)
+    parts: list[float] = []
+    if eps_g is not None:
+        parts.append(float(eps_g))
+    if rev_g is not None:
+        parts.append(float(rev_g))
+    if not parts:
+        raise ValueError(
+            "Yahoo mixed growth unavailable (need EPS forward/trailing and/or revenueGrowth in ticker.info)."
+        )
+    g = sum(parts) / len(parts)
+    snip = f"yahoo 1y blend (n={len(parts)}): " + (
+        f"eps+rev" if len(parts) == 2 else ("eps" if eps_g is not None else "rev")
+    )
+    return g, snip

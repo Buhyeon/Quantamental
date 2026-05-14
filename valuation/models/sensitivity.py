@@ -52,6 +52,7 @@ def intrinsic_sensitivity_grid(
     wacc_min_above_terminal: float = 0.005,
     use_explicit_decay: bool = False,
     high_growth_years: int = 3,
+    terminal_period_years: int = 0,
 ) -> IntrinsicSensitivityGrid:
     """2D grid: vary growth × WACC; hold terminal growth fixed.
 
@@ -95,6 +96,7 @@ def intrinsic_sensitivity_grid(
                         net_debt=net_debt,
                         projection_years=projection_years,
                         high_growth_years=high_growth_years,
+                        terminal_period_years=terminal_period_years,
                     )
                 else:
                     r = intrinsic_value_per_share(
@@ -105,6 +107,7 @@ def intrinsic_sensitivity_grid(
                         shares_outstanding=shares_outstanding,
                         net_debt=net_debt,
                         projection_years=projection_years,
+                        terminal_period_years=terminal_period_years,
                     )
                 row.append(r["intrinsic_value_per_share"])
             matrix.append(row)
@@ -160,6 +163,7 @@ def monte_carlo_intrinsic(
     max_attempts_factor: int = 50,
     use_explicit_decay: bool = False,
     high_growth_years: int = 3,
+    terminal_period_years: int = 0,
 ) -> MonteCarloSummary:
     """Sample growth, WACC, and terminal growth uniformly around centers; collect IV/share.
 
@@ -209,6 +213,7 @@ def monte_carlo_intrinsic(
                         net_debt=net_debt,
                         projection_years=projection_years,
                         high_growth_years=high_growth_years,
+                        terminal_period_years=terminal_period_years,
                     )
                 else:
                     r = intrinsic_value_per_share(
@@ -219,6 +224,7 @@ def monte_carlo_intrinsic(
                         shares_outstanding=shares_outstanding,
                         net_debt=net_debt,
                         projection_years=projection_years,
+                        terminal_period_years=terminal_period_years,
                     )
             except ValueError:
                 continue

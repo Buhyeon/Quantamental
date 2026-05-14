@@ -333,6 +333,92 @@ def _series(rows: list[dict]) -> dict[int, float]:
     return {int(r["fy"]): float(r["val"]) for r in rows}
 
 
+def _annual_val_by_fy(annual_rows: list[dict]) -> dict[int, float]:
+    return {int(r["fy"]): float(r["val"]) for r in annual_rows}
+
+
+def _ttm_component_at_quarter(
+    annual_rows: list[dict], quarterly_rows: list[dict], q_row: dict
+) -> float | None:
+    """TTM for one flow (CFO or CapEx) at quarter ``q_row``: FY[q_fy-1] + YTD_q − YTD_prior."""
+    if not annual_rows or not quarterly_rows:
+        return None
+    ann = _annual_val_by_fy(annual_rows)
+    q_fy = int(q_row["fy"])
+    q_fp = str(q_row["fp"])
+    base = ann.get(q_fy - 1)
+    if base is None:
+        return None
+    prior = None
+    for row in quarterly_rows:
+        if int(row["fy"]) == q_fy - 1 and str(row["fp"]) == q_fp:
+            prior = row
+            break
+    if prior is None:
+        return None
+    return base + float(q_row["val"]) - float(prior["val"])
+
+
+def _ttm_fcf_by_quarter_key(facts: dict) -> dict[tuple[int, str], float]:
+    """Map ``(fiscal_year, Qn)`` -> TTM FCF for each 10-Q anchor (CFO TTM − CapEx TTM)."""
+    out: dict[tuple[int, str], float] = {}
+    for c_cfo in CFO_CONCEPTS:
+        cfo_a = _annual_rows(facts, c_cfo, unit="USD")
+        cfo_q = _quarterly_rows(facts, c_cfo, unit="USD")
+        if not cfo_a or not cfo_q:
+            continue
+        for c_cx in CAPEX_CONCEPTS:
+            cx_a = _annual_rows(facts, c_cx, unit="USD")
+            cx_q = _quarterly_rows(facts, c_cx, unit="USD")
+            if not cx_a or not cx_q:
+                continue
+            for q_row in cfo_q:
+                ttm_cfo = _ttm_component_at_quarter(cfo_a, cfo_q, q_row)
+                if ttm_cfo is None:
+                    continue
+                k = (int(q_row["fy"]), str(q_row["fp"]))
+                q_cx = None
+                for r in cx_q:
+                    if int(r["fy"]) == k[0] and str(r["fp"]) == k[1]:
+                        q_cx = r
+                        break
+                if q_cx is None:
+                    continue
+                ttm_cx = _ttm_component_at_quarter(cx_a, cx_q, q_cx)
+                if ttm_cx is None:
+                    continue
+                out[k] = ttm_cfo - ttm_cx
+            if out:
+                return out
+    return out
+
+
+def mean_ttm_fcf_yoy_growth_rates(facts: dict, *, max_rates: int = 3) -> float | None:
+    """Mean of up to ``max_rates`` YoY TTM FCF changes at the same fiscal quarter (10-Q).
+
+    Uses the most recent comparable YoY pairs first.
+    """
+    by_q = _ttm_fcf_by_quarter_key(facts)
+    if len(by_q) < 2:
+        return None
+    fp_order = {"Q1": 1, "Q2": 2, "Q3": 3}
+    keys = sorted(by_q.keys(), key=lambda x: (x[0], fp_order.get(x[1], 0)))
+    rates: list[float] = []
+    for fy, fp in reversed(keys):
+        prev_k = (fy - 1, fp)
+        if prev_k not in by_q:
+            continue
+        cur_v, prev_v = by_q[(fy, fp)], by_q[prev_k]
+        if prev_v <= 0:
+            continue
+        rates.append((cur_v - prev_v) / prev_v)
+        if len(rates) >= max_rates:
+            break
+    if not rates:
+        return None
+    return sum(rates) / len(rates)
+
+
 def _ttm_from_10q_bridge(
     annual_rows: list[dict], quarterly_rows: list[dict]
 ) -> float | None:

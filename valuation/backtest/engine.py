@@ -196,6 +196,8 @@ def run_backtest_valuation(
             fcf_cagr_window=fcf_window,
             include_yahoo_consensus=include_yahoo_consensus,
             as_of=as_of,
+            company_facts=None,
+            baseline_eps=None,
         )
         growth_fcf = growth_est.growth_rate
     else:
@@ -217,6 +219,7 @@ def run_backtest_valuation(
     wacc = assumptions.wacc
     tg = assumptions.terminal_growth
     py = assumptions.projection_years
+    tp = assumptions.terminal_period_years
 
     if model_mode in ("fcf", "both") and f.shares_outstanding > 0 and base_fcf != 0:
         if auto_growth:
@@ -228,6 +231,7 @@ def run_backtest_valuation(
                 shares_outstanding=f.shares_outstanding,
                 net_debt=f.net_debt,
                 projection_years=py,
+                terminal_period_years=tp,
             )
         else:
             r = intrinsic_value_per_share(
@@ -238,6 +242,7 @@ def run_backtest_valuation(
                 shares_outstanding=f.shares_outstanding,
                 net_debt=f.net_debt,
                 projection_years=py,
+                terminal_period_years=tp,
             )
         iv_fcf = float(r["intrinsic_value_per_share"])
 
@@ -249,6 +254,7 @@ def run_backtest_valuation(
                 wacc=wacc,
                 terminal_growth=tg,
                 projection_years=py,
+                terminal_period_years=tp,
             )
         else:
             r_e = intrinsic_price_from_eps(
@@ -257,6 +263,7 @@ def run_backtest_valuation(
                 wacc=wacc,
                 terminal_growth=tg,
                 projection_years=py,
+                terminal_period_years=tp,
             )
         iv_eps = float(r_e["intrinsic_price_per_share"])
 

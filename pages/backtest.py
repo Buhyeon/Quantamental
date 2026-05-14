@@ -1,14 +1,20 @@
 """
 Backtesting: intrinsic value at a historical date vs subsequent price path.
 
-Uses EDGAR facts filed on or before the valuation date; Yahoo consensus is off
-by default (not point-in-time). WACC is manual (live CAPM is current-data).
+Uses EDGAR facts filed on or before the valuation date. Shared DCF assumptions
+live in the sidebar (aligned with Single Stock DCF): **Mixed** blends SEC with
+Yahoo where that mode uses it; **Blended FCF** is SEC trailing FCF only; **EPS**
+uses Yahoo consensus. WACC can be **Auto-WACC** (CAPM from live price +
+fundamentals, not as-of the valuation date) or **manual**.
 """
 
 from __future__ import annotations
 
 import warnings
 from datetime import date
+from typing import Literal
+
+from dataclasses import replace
 
 import altair as alt
 import pandas as pd
@@ -25,18 +31,45 @@ from valuation.backtest.rolling_iv import (
     select_iv,
 )
 from valuation.config import (
-    DCFAssumptions,
     DEFAULT_FCF_AVG_YEARS,
     DEFAULT_GROWTH_RATE,
     DEFAULT_PROJECTION_YEARS,
     DEFAULT_TERMINAL_GROWTH,
+    DEFAULT_TERMINAL_PERIOD_YEARS,
     DEFAULT_WACC,
+    DCFAssumptions,
 )
-from valuation.data.edgar import EdgarError, lookup_cik
-from valuation.data.market import MarketDataError, get_price_history_daterange
+from valuation.data.edgar import EdgarError, get_fundamentals, lookup_cik
+from valuation.data.market import MarketDataError, get_current_price, get_price_history_daterange
 from valuation.growth.estimate import AutoGrowthMode
+from valuation.models.wacc_estimate import estimate_wacc
 
-st.set_page_config(page_title="Backtesting", layout="wide")
+_UI_AUTO_GROWTH_LABEL_TO_MODE: dict[str, AutoGrowthMode] = {
+    "Mixed (default)": "fcf_sec_yahoo_mixed",
+    "Blended FCF": "blended_fcf",
+    "EPS": "consensus_only",
+}
+
+
+def _fcf_mode_from_ui(label: str) -> AutoGrowthMode:
+    return _UI_AUTO_GROWTH_LABEL_TO_MODE[label]
+
+
+def _dcf_path_from_fcf_mode(mode: AutoGrowthMode) -> Literal["fcf", "eps"]:
+    return "eps" if mode == "consensus_only" else "fcf"
+
+
+def _resolve_wacc_for_ticker(ticker: str, *, auto_wacc: bool, manual_wacc: float) -> float:
+    """Live CAPM WACC when auto; else manual. Falls back to ``manual_wacc`` on errors."""
+    if not auto_wacc:
+        return float(manual_wacc)
+    sym = ticker.strip().upper()
+    try:
+        f_live = get_fundamentals(sym)
+        px = get_current_price(sym)
+        return float(estimate_wacc(sym, f_live, px).wacc)
+    except Exception:
+        return float(manual_wacc)
 
 
 @st.cache_data(ttl=1800)
@@ -50,17 +83,79 @@ def _cached_revision_filing_dates(
     return tuple(str(d) for d in revision_anchor_dates(cik, d0, d1))
 
 
-st.title("Backtesting")
-st.caption(
-    "Intrinsic value uses SEC filings known by the valuation date. "
-    "Default growth excludes Yahoo (not historical). Use manual WACC."
+st.set_page_config(page_title="Backtesting", layout="wide")
+
+st.markdown(
+    """
+    <style>
+    .dcf-compact-section { font-size: 0.95rem; font-weight: 600; margin: 0 0 0.25rem 0; color: inherit; }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
-tab_single, tab_basket, tab_rolling = st.tabs(["Single ticker", "Basket", "Rolling IV"])
+st.title("Backtesting")
+st.caption(
+    "Model inputs use EDGAR XBRL with `filed` on or before the valuation date. "
+    "Growth modes match Single Stock DCF; **Mixed** and **EPS** pull live Yahoo fields (not point-in-time for history). "
+    "**Blended FCF** stays on SEC. **Auto-WACC** uses live price + latest fundamentals (not as-of that date)."
+)
 
 with st.sidebar:
-    st.header("DCF assumptions (backtest)")
-    wacc_val = st.slider("WACC", 0.02, 0.30, float(DEFAULT_WACC), 0.0025, "%.4f")
+    st.caption("Use **navigation** above to switch tools.")
+    st.markdown('<p class="dcf-compact-section">Growth</p>', unsafe_allow_html=True)
+    auto_growth = st.checkbox("Auto-growth", value=True, key="bt_auto_growth")
+    fcf_growth_source = st.radio(
+        "Auto-growth option",
+        tuple(_UI_AUTO_GROWTH_LABEL_TO_MODE.keys()),
+        index=0,
+        disabled=not auto_growth,
+        horizontal=True,
+        key="bt_fcf_src",
+        help=(
+            "Mixed: SEC + Yahoo where the blend uses Yahoo. Blended FCF: SEC trailing FCF only. "
+            "EPS: Yahoo consensus growth."
+        ),
+    )
+    fcf_mode = _fcf_mode_from_ui(fcf_growth_source)
+    dcf_path = _dcf_path_from_fcf_mode(fcf_mode)
+    bt_model_mode: Literal["fcf", "eps"] = "eps" if dcf_path == "eps" else "fcf"
+
+    if auto_growth:
+        growth_manual = DEFAULT_GROWTH_RATE
+    else:
+        growth_manual = st.slider(
+            "Manual growth rate",
+            -0.05,
+            1.0,
+            float(DEFAULT_GROWTH_RATE),
+            0.005,
+            "%.3f",
+            key="bt_man_g",
+        )
+
+    st.markdown('<p class="dcf-compact-section">WACC & terminal</p>', unsafe_allow_html=True)
+    auto_wacc = st.checkbox(
+        "Auto-WACC",
+        value=True,
+        key="bt_auto_wacc",
+        help=(
+            "CAPM from live price + latest EDGAR fundamentals (not as-of valuation date). "
+            "On failure, falls back to the built-in default WACC."
+        ),
+    )
+    if not auto_wacc:
+        wacc_val = st.slider(
+            "Manual WACC",
+            0.02,
+            0.30,
+            float(DEFAULT_WACC),
+            0.0025,
+            "%.4f",
+            key="bt_wacc",
+        )
+    else:
+        wacc_val = float(DEFAULT_WACC)
     terminal = st.slider(
         "Terminal growth",
         0.0,
@@ -68,63 +163,54 @@ with st.sidebar:
         float(DEFAULT_TERMINAL_GROWTH),
         0.001,
         "%.4f",
+        key="bt_term_g",
+        help="Perpetuity + explicit-period decay target.",
     )
+    auto_terminal_period = st.checkbox(
+        f"Auto terminal period ({DEFAULT_TERMINAL_PERIOD_YEARS}y)",
+        value=True,
+        key="bt_auto_tp",
+    )
+    if auto_terminal_period:
+        terminal_period_years_bt = DEFAULT_TERMINAL_PERIOD_YEARS
+    else:
+        terminal_period_years_bt = st.number_input(
+            "Terminal period (y)",
+            0,
+            15,
+            DEFAULT_TERMINAL_PERIOD_YEARS,
+            key="bt_tp_y",
+        )
     projection_years = st.number_input(
-        "Projection years", 1, 15, DEFAULT_PROJECTION_YEARS
-    )
-    auto_growth = st.checkbox("Auto-growth", value=True)
-    auto_mode = st.radio(
-        "Growth mode",
-        ("Blended (FCF CAGR + 8-K, no Yahoo)", "Consensus only (Yahoo—live data)"),
-        index=0,
-        disabled=not auto_growth,
-    )
-    auto_growth_mode: AutoGrowthMode = (
-        "consensus_only" if "Consensus" in auto_mode else "blended"
-    )
-    include_yahoo = auto_growth_mode == "consensus_only"
-    fcf_cagr_win = st.number_input(
-        "FCF CAGR FY window (blended)",
-        0,
-        30,
-        2,
-        disabled=not auto_growth or auto_growth_mode == "consensus_only",
-    )
-    manual_growth = st.slider(
-        "Manual growth (if auto off)",
-        -0.2,
-        0.5,
-        float(DEFAULT_GROWTH_RATE),
-        0.005,
-        "%.3f",
-        disabled=auto_growth,
-    )
-    match_eps = st.checkbox("Match EPS growth to FCF", value=True)
-    eps_override = st.slider(
-        "EPS growth override",
-        -0.2,
-        0.5,
-        float(DEFAULT_GROWTH_RATE),
-        0.005,
-        "%.3f",
-        disabled=auto_growth or match_eps,
-    )
-    fcf_avg_years = st.number_input(
-        "FCF / EPS anchor years",
+        "Explicit horizon (years)",
         1,
-        10,
-        DEFAULT_FCF_AVG_YEARS,
+        15,
+        int(DEFAULT_PROJECTION_YEARS),
+        key="bt_proj_y",
     )
+
+include_yahoo = fcf_mode == "consensus_only"
+fcf_win = 2
 
 assumptions = DCFAssumptions(
     growth_rate=DEFAULT_GROWTH_RATE,
-    wacc=wacc_val,
+    wacc=float(wacc_val),
     terminal_growth=float(terminal),
     projection_years=int(projection_years),
+    terminal_period_years=int(terminal_period_years_bt),
 )
 
-fcf_win = None if int(fcf_cagr_win) == 0 else int(fcf_cagr_win)
-eps_ov = None if match_eps else float(eps_override)
+
+COMMON_BT_KWARGS = dict(
+    auto_growth=auto_growth,
+    auto_growth_mode=fcf_mode,
+    fcf_cagr_window=fcf_win,
+    include_yahoo_consensus=include_yahoo,
+    fcf_avg_years=int(DEFAULT_FCF_AVG_YEARS),
+    match_fcf_for_eps=True,
+    manual_growth=float(growth_manual),
+    eps_growth_override=None,
+)
 
 
 def _single_iv_mode_label(model_mode: str) -> str:
@@ -133,6 +219,9 @@ def _single_iv_mode_label(model_mode: str) -> str:
         if model_mode == "fcf"
         else "EPS IV" if model_mode == "eps" else "Average (FCF + EPS)"
     )
+
+
+tab_single, tab_basket, tab_rolling = st.tabs(["Single ticker", "Basket", "Rolling IV"])
 
 
 def _months_approx(calendar_days: int) -> float:
@@ -257,6 +346,12 @@ def _rolling_iv_morningstar_chart(
         range=["#ff922b", "#4dabf7"],
     )
 
+    line_legend = alt.Legend(orient="top", columns=2, title=None)
+    line_color_scale = alt.Scale(
+        domain=["Market Price", "IV Price"],
+        range=["#f8fafc", "#fff3bf"],
+    )
+
     if not ribbons.empty:
         shading = alt.Chart(ribbons).mark_area(opacity=0.52, interpolate="linear").encode(
             x=alt.X("t:T", title="Date"),
@@ -265,7 +360,7 @@ def _rolling_iv_morningstar_chart(
             color=alt.Color(
                 "regime:N",
                 scale=color_scale,
-                legend=alt.Legend(orient="top", columns=2, title=None),
+                legend=None,
             ),
             detail=alt.Detail("segment_id:N"),
             order=alt.Order("t:T"),
@@ -286,27 +381,37 @@ def _rolling_iv_morningstar_chart(
             alt.Tooltip("Close:Q", title="Market price", format=".2f"),
         ],
     )
-    px_line = alt.Chart(fv_src).mark_line(
+    fv_px = fv_src.assign(_series="Market Price")
+    fv_iv = fv_src.assign(_series="IV Price")
+    px_line = alt.Chart(fv_px).mark_line(
         interpolate="linear",
-        stroke="#f8fafc",
         strokeWidth=1.5,
         opacity=0.95,
     ).encode(
         x="t:T",
         y="Close:Q",
+        color=alt.Color(
+            "_series:N",
+            scale=line_color_scale,
+            legend=line_legend,
+        ),
         tooltip=[
             alt.Tooltip("t:T", title="Date"),
             alt.Tooltip("Close:Q", title="Market price", format=".2f"),
             alt.Tooltip("iv_step:Q", title="Fair value", format=".2f"),
         ],
     )
-    fv_line = alt.Chart(fv_src).mark_line(
+    fv_line = alt.Chart(fv_iv).mark_line(
         interpolate="step-after",
-        color="#fff3bf",
         strokeWidth=3.0,
     ).encode(
         x="t:T",
         y=alt.Y("iv_step:Q", title=y_title),
+        color=alt.Color(
+            "_series:N",
+            scale=line_color_scale,
+            legend=None,
+        ),
         tooltip=[
             alt.Tooltip("t:T", title="Date"),
             alt.Tooltip("iv_step:Q", title="Fair value", format=".2f"),
@@ -322,8 +427,8 @@ def _rolling_iv_morningstar_chart(
             title=alt.TitleParams(
                 text=f"{ticker.upper()} — price vs model fair value",
                 subtitle=(
-                    "Orange: price above modeled fair value. Blue: below. Cream step line: fair "
-                    "(10-K / 10-Q filings)."
+                    "Shaded bands: market price vs intrinsic (orange above IV, blue below). "
+                    "Step line: intrinsic value at each filing-date revision anchor (reports and amendments)."
                 ),
                 color="#f8fafc",
                 subtitleColor="#cbd5e1",
@@ -344,24 +449,17 @@ def _rolling_iv_morningstar_chart(
     return labeled, last
 
 
-COMMON_BT_KWARGS = dict(
-    auto_growth=auto_growth,
-    auto_growth_mode=auto_growth_mode,
-    fcf_cagr_window=fcf_win,
-    include_yahoo_consensus=include_yahoo,
-    fcf_avg_years=int(fcf_avg_years),
-    match_fcf_for_eps=match_eps,
-    manual_growth=float(manual_growth),
-    eps_growth_override=eps_ov,
-)
-
-
 with tab_single:
+    st.markdown(
+        "One ticker: set **as-of** valuation date and chart end, then run. "
+        "**Growth** and **WACC** (auto or manual from the sidebar) apply here; with **Auto-WACC**, "
+        "the discount rate is resolved per ticker when you run."
+    )
     c1, c2 = st.columns(2)
     with c1:
         ticker_s = st.text_input("Ticker", value="AAPL", key="bt_ticker").strip().upper() or "AAPL"
     with c2:
-        model_mode = st.selectbox("Model", ("fcf", "eps", "both"), index=0, key="bt_model")
+        st.caption(f"DCF path: **{bt_model_mode.upper()}** (from sidebar growth option)")
 
     d1, d2 = st.columns(2)
     with d1:
@@ -401,20 +499,27 @@ with tab_single:
             except ValueError as e:
                 st.error(str(e))
                 st.stop()
+            w_use = _resolve_wacc_for_ticker(ticker_s, auto_wacc=auto_wacc, manual_wacc=wacc_val)
+            assumptions_run = replace(assumptions, wacc=w_use)
+            try:
+                assumptions_run.validate()
+            except ValueError as e:
+                st.error(str(e))
+                st.stop()
             try:
                 with st.spinner("Loading fundamentals (as-of)..."):
                     bt = run_backtest_valuation(
                         ticker_s,
                         val_date,
-                        assumptions,
-                        model_mode=model_mode,
+                        assumptions_run,
+                        model_mode=bt_model_mode,
                         **COMMON_BT_KWARGS,
                     )
             except EdgarError as e:
                 st.error(f"EDGAR: {e}")
                 st.stop()
 
-            iv_line = select_iv(bt, _single_iv_mode_label(model_mode))
+            iv_line = select_iv(bt, _single_iv_mode_label(bt_model_mode))
 
             st.subheader("Intrinsic snapshot")
             mcols = st.columns(4)
@@ -487,7 +592,10 @@ with tab_single:
 
 with tab_basket:
     st.markdown(
-        "Enter tickers (comma or newline separated). Same assumptions as sidebar."
+        "Enter tickers (comma or newline separated). **Valuation date** and **forward end date** are shared. "
+        "Sidebar **growth** and **WACC** apply to every row; intrinsic used for the hit test follows the "
+        "**FCF path** or **EPS path** from that growth option, same as Single ticker. "
+        "Use **Optional hit horizon** below for timed hit columns and conditional hit rate."
     )
     basket_raw = st.text_area("Tickers", value="AAPL\nMSFT", height=120)
     val_date_b = st.date_input(
@@ -501,11 +609,6 @@ with tab_basket:
         value=date.today(),
         max_value=date.today(),
         key="bt_b_end",
-    )
-    model_b = st.selectbox(
-        "IV for hit test",
-        ("FCF IV", "EPS IV", "Average (FCF + EPS)"),
-        index=0,
     )
     tol_b = st.slider(
         "Band tolerance",
@@ -578,10 +681,18 @@ with tab_basket:
                         "Note": "",
                     }
                     try:
+                        w_tk = _resolve_wacc_for_ticker(tk, auto_wacc=auto_wacc, manual_wacc=wacc_val)
+                        a_tk = replace(assumptions, wacc=w_tk)
+                        a_tk.validate()
+                    except ValueError as ve:
+                        row_base["Note"] = str(ve)[:80]
+                        rows.append(row_base)
+                        continue
+                    try:
                         bt = run_backtest_valuation(
                             tk,
                             val_date_b,
-                            assumptions,
+                            a_tk,
                             model_mode="both",
                             **COMMON_BT_KWARGS,
                         )
@@ -590,7 +701,7 @@ with tab_basket:
                         rows.append(row_base)
                         continue
 
-                    iv_t = select_iv(bt, model_b)
+                    iv_t = select_iv(bt, _single_iv_mode_label(bt_model_mode))
                     row_base["IV target"] = iv_t
                     if iv_t is None or iv_t <= 0:
                         row_base["Note"] = "No IV"
@@ -649,30 +760,26 @@ with tab_basket:
 
 with tab_rolling:
     st.markdown(
-        "Recompute intrinsic value each time a **10-K**, **10-Q**, or amended **10-K/A** / **10-Q/A** "
-        "filing arrives in-window; "
-        "then compare how quickly price enters the tolerance band vs **new** IV and **prior** IV."
+        """
+Recompute intrinsic value each time a **10-K**, **10-Q**, or amended **10-K/A** / **10-Q/A** arrives
+in-window; then compare how quickly price enters the tolerance band vs **new** IV and **prior** IV.
+
+- **Filing anchors:** EDGAR’s primary submissions list plus up to **20** archived submission JSON files
+  per run—useful when the “recent” list is crowded by other forms for liquid names (~years of quarterlies).
+        """
     )
+    roll_ticker_s = (
+        st.text_input("Ticker (single)", value="AAPL", key="rb_tsingle")
+        .strip()
+        .upper()
+        or "AAPL"
+    )
+    roll_mode_iv = _single_iv_mode_label(bt_model_mode)
     st.caption(
-        "Filing anchors load the primary EDGAR submissions feed plus up to **20** archived submission "
-        "JSON files—needed for liquid names whose “recent” list is crowded by other forms (~5y of quarterlies)."
+        f"Chart and hit-test IV: **{roll_mode_iv}** (from sidebar growth option). "
+        "Each filing recomputes **FCF and EPS** paths when data allows."
     )
-    rk1, rk2 = st.columns(2)
-    with rk1:
-        roll_ticker_s = (
-            st.text_input("Ticker (single)", value="AAPL", key="rb_tsingle")
-            .strip()
-            .upper()
-            or "AAPL"
-        )
-    with rk2:
-        roll_mode_iv = st.selectbox(
-            "IV metric",
-            ("FCF IV", "EPS IV", "Average (FCF + EPS)"),
-            index=0,
-            key="rb_ivm",
-        )
-    roll_model = st.selectbox("DCF inputs", ("fcf", "eps", "both"), index=2, key="rb_mdl")
+    roll_model: Literal["fcf", "eps", "both"] = "both"
 
     rr1, rr2 = st.columns(2)
     with rr1:
@@ -726,13 +833,21 @@ with tab_rolling:
             )
             fds = [date.fromisoformat(x) for x in fd_iso]
 
+            w_roll = _resolve_wacc_for_ticker(sym, auto_wacc=auto_wacc, manual_wacc=wacc_val)
+            assumptions_roll = replace(assumptions, wacc=w_roll)
+            try:
+                assumptions_roll.validate()
+            except ValueError as e:
+                st.error(str(e))
+                st.stop()
+
             with st.spinner("Rolling IV computation…"):
                 try:
                     ana = run_rolling_iv_analysis(
                         sym,
                         roll_start,
                         roll_end,
-                        assumptions,
+                        assumptions_roll,
                         tolerance=float(tol_r),
                         iv_mode=roll_mode_iv,
                         model_mode=roll_model,
@@ -868,12 +983,21 @@ with tab_rolling:
                         cik, roll_start.isoformat(), roll_end.isoformat()
                     )
                     fds = [date.fromisoformat(x) for x in fd_iso]
+                    w_sym = _resolve_wacc_for_ticker(sym, auto_wacc=auto_wacc, manual_wacc=wacc_val)
+                    a_sym = replace(assumptions, wacc=w_sym)
+                    try:
+                        a_sym.validate()
+                    except ValueError as ve:
+                        summary_rows.append(
+                            {"Ticker": sym, "Revisions": 0, "Note": str(ve)[:60]}
+                        )
+                        continue
                     try:
                         ana_b = run_rolling_iv_analysis(
                             sym,
                             roll_start,
                             roll_end,
-                            assumptions,
+                            a_sym,
                             tolerance=float(tol_r),
                             iv_mode=roll_mode_iv,
                             model_mode=roll_model,

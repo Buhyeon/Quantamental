@@ -114,9 +114,13 @@ def test_intermediate_values_exposed():
     assert len(r["pv_fcfs"]) == 5
     # Year-1 projected FCF must equal base * (1+g)
     assert math.isclose(r["projected_fcfs"][0], 110.0, rel_tol=1e-9)
-    # PV of FCFs sum + PV(TV) = enterprise value
+    # PV of FCFs sum + PV(terminal phase) + PV(TV) = enterprise value
     assert math.isclose(
-        sum(r["pv_fcfs"]) + r["pv_terminal_value"], r["enterprise_value"], rel_tol=1e-9
+        sum(r["pv_fcfs"])
+        + sum(r["pv_terminal_period_fcfs"])
+        + r["pv_terminal_value"],
+        r["enterprise_value"],
+        rel_tol=1e-9,
     )
     # Equity = EV - net_debt
     assert math.isclose(r["equity_value"], r["enterprise_value"] - 50.0, rel_tol=1e-9)
@@ -165,6 +169,62 @@ def test_explicit_decay_matches_constant_when_terminal_equals_high():
     )
 
 
+def test_terminal_period_zero_matches_legacy_tv_discount():
+    """terminal_period_years=0 must match old TV timing (horizon = projection_years)."""
+    r0 = intrinsic_value_per_share_explicit_decay(
+        base_fcf=100.0,
+        growth_rate=0.05,
+        wacc=0.10,
+        terminal_growth=0.02,
+        shares_outstanding=1.0,
+        net_debt=0.0,
+        projection_years=5,
+        terminal_period_years=0,
+    )
+    r_legacy = intrinsic_value_per_share_explicit_decay(
+        base_fcf=100.0,
+        growth_rate=0.05,
+        wacc=0.10,
+        terminal_growth=0.02,
+        shares_outstanding=1.0,
+        net_debt=0.0,
+        projection_years=5,
+    )
+    assert math.isclose(
+        r0["intrinsic_value_per_share"],
+        r_legacy["intrinsic_value_per_share"],
+        rel_tol=1e-9,
+    )
+    assert r0["projected_terminal_fcfs"] == []
+    assert r0["pv_terminal_period_fcfs"] == []
+
+
+def test_terminal_period_adds_discounted_flows():
+    r = intrinsic_value_per_share_explicit_decay(
+        base_fcf=100.0,
+        growth_rate=0.0,
+        wacc=0.10,
+        terminal_growth=0.0,
+        shares_outstanding=1.0,
+        net_debt=0.0,
+        projection_years=1,
+        high_growth_years=1,
+        terminal_period_years=1,
+    )
+    # Explicit: one year at g=0 -> FCF1=100, PV1=100/1.1
+    assert len(r["projected_fcfs"]) == 1
+    assert math.isclose(r["projected_fcfs"][0], 100.0, rel_tol=1e-9)
+    # Terminal phase: FCF2=100, PV2=100/1.1^2
+    assert len(r["projected_terminal_fcfs"]) == 1
+    assert math.isclose(r["projected_terminal_fcfs"][0], 100.0, rel_tol=1e-9)
+    assert math.isclose(r["pv_terminal_period_fcfs"][0], 100.0 / 1.1**2, rel_tol=1e-9)
+    # TV at t=2: 100/0.1=1000, PV=1000/1.1^2
+    assert math.isclose(r["terminal_value"], 1000.0, rel_tol=1e-9)
+    assert math.isclose(r["pv_terminal_value"], 1000.0 / 1.1**2, rel_tol=1e-9)
+    ev = 100 / 1.1 + 100 / 1.1**2 + 1000 / 1.1**2
+    assert math.isclose(r["enterprise_value"], ev, rel_tol=1e-9)
+
+
 def test_explicit_decay_pv_plus_tv_equals_ev():
     r = intrinsic_value_per_share_explicit_decay(
         base_fcf=100.0,
@@ -177,5 +237,9 @@ def test_explicit_decay_pv_plus_tv_equals_ev():
     )
     assert len(r["explicit_growth_rates"]) == 5
     assert math.isclose(
-        sum(r["pv_fcfs"]) + r["pv_terminal_value"], r["enterprise_value"], rel_tol=1e-9
+        sum(r["pv_fcfs"])
+        + sum(r["pv_terminal_period_fcfs"])
+        + r["pv_terminal_value"],
+        r["enterprise_value"],
+        rel_tol=1e-9,
     )

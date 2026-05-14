@@ -11,7 +11,7 @@ import warnings
 from typing import TypedDict
 
 from valuation.config import DEFAULT_PROJECTION_YEARS
-from valuation.models.dcf import explicit_yoy_rates_decay
+from valuation.models.dcf import explicit_yoy_rates_decay, _terminal_phase_and_gordon
 
 
 class EPSDCFResult(TypedDict):
@@ -20,9 +20,12 @@ class EPSDCFResult(TypedDict):
     wacc: float
     terminal_growth: float
     projection_years: int
+    terminal_period_years: int
     projected_eps: list[float]
     pv_eps: list[float]
     explicit_growth_rates: list[float]
+    projected_terminal_eps: list[float]
+    pv_terminal_period_eps: list[float]
     terminal_value_per_share: float
     pv_terminal_value_per_share: float
     intrinsic_price_per_share: float
@@ -34,6 +37,7 @@ def intrinsic_price_from_eps(
     wacc: float,
     terminal_growth: float,
     projection_years: int = DEFAULT_PROJECTION_YEARS,
+    terminal_period_years: int = 0,
 ) -> EPSDCFResult:
     """DCF on EPS only — intrinsic **price per share**.
 
@@ -46,6 +50,8 @@ def intrinsic_price_from_eps(
         )
     if projection_years < 1:
         raise ValueError("projection_years must be >= 1")
+    if terminal_period_years < 0:
+        raise ValueError("terminal_period_years must be >= 0")
     if base_eps <= 0:
         warnings.warn(
             "Base EPS <= 0; per-share intrinsic value models are unreliable for "
@@ -73,10 +79,15 @@ def intrinsic_price_from_eps(
         pv_eps.append(pv_t)
 
     eps_final = projected_eps[-1]
-    tv = eps_final * (1 + terminal_growth) / (wacc - terminal_growth)
-    pv_tv = tv / (1 + wacc) ** projection_years
+    proj_t, pv_t, tv, pv_tv = _terminal_phase_and_gordon(
+        eps_final,
+        wacc,
+        terminal_growth,
+        terminal_period_years,
+        projection_years,
+    )
 
-    intrinsic = sum(pv_eps) + pv_tv
+    intrinsic = sum(pv_eps) + sum(pv_t) + pv_tv
     explicit_rates = [growth_rate] * projection_years
 
     return EPSDCFResult(
@@ -85,9 +96,12 @@ def intrinsic_price_from_eps(
         wacc=wacc,
         terminal_growth=terminal_growth,
         projection_years=projection_years,
+        terminal_period_years=terminal_period_years,
         projected_eps=projected_eps,
         pv_eps=pv_eps,
         explicit_growth_rates=explicit_rates,
+        projected_terminal_eps=proj_t,
+        pv_terminal_period_eps=pv_t,
         terminal_value_per_share=tv,
         pv_terminal_value_per_share=pv_tv,
         intrinsic_price_per_share=intrinsic,
@@ -101,6 +115,7 @@ def intrinsic_price_from_eps_explicit_decay(
     terminal_growth: float,
     projection_years: int = DEFAULT_PROJECTION_YEARS,
     high_growth_years: int = 3,
+    terminal_period_years: int = 0,
 ) -> EPSDCFResult:
     """EPS DCF with explicit YoY rates fading to ``terminal_growth``."""
     if wacc <= terminal_growth:
@@ -109,6 +124,8 @@ def intrinsic_price_from_eps_explicit_decay(
         )
     if projection_years < 1:
         raise ValueError("projection_years must be >= 1")
+    if terminal_period_years < 0:
+        raise ValueError("terminal_period_years must be >= 0")
     if base_eps <= 0:
         warnings.warn(
             "Base EPS <= 0; per-share intrinsic value models are unreliable for "
@@ -141,10 +158,15 @@ def intrinsic_price_from_eps_explicit_decay(
         eps_prev = eps_t
 
     eps_final = projected_eps[-1]
-    tv = eps_final * (1 + terminal_growth) / (wacc - terminal_growth)
-    pv_tv = tv / (1 + wacc) ** projection_years
+    proj_t, pv_t, tv, pv_tv = _terminal_phase_and_gordon(
+        eps_final,
+        wacc,
+        terminal_growth,
+        terminal_period_years,
+        projection_years,
+    )
 
-    intrinsic = sum(pv_eps) + pv_tv
+    intrinsic = sum(pv_eps) + sum(pv_t) + pv_tv
 
     return EPSDCFResult(
         base_eps=base_eps,
@@ -152,9 +174,12 @@ def intrinsic_price_from_eps_explicit_decay(
         wacc=wacc,
         terminal_growth=terminal_growth,
         projection_years=projection_years,
+        terminal_period_years=terminal_period_years,
         projected_eps=projected_eps,
         pv_eps=pv_eps,
         explicit_growth_rates=rates,
+        projected_terminal_eps=proj_t,
+        pv_terminal_period_eps=pv_t,
         terminal_value_per_share=tv,
         pv_terminal_value_per_share=pv_tv,
         intrinsic_price_per_share=intrinsic,

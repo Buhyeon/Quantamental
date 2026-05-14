@@ -64,7 +64,9 @@ def test_eps_explicit_decay_pv_identity():
         )
     assert len(r["explicit_growth_rates"]) == 4
     assert math.isclose(
-        sum(r["pv_eps"]) + r["pv_terminal_value_per_share"],
+        sum(r["pv_eps"])
+        + sum(r["pv_terminal_period_eps"])
+        + r["pv_terminal_value_per_share"],
         r["intrinsic_price_per_share"],
         rel_tol=1e-9,
     )

@@ -8,6 +8,7 @@ a much heavier scrape that breaks frequently when Yahoo changes their HTML.
 from __future__ import annotations
 
 from datetime import date, timedelta
+from typing import Any
 
 import pandas as pd
 import yfinance as yf
@@ -67,6 +68,100 @@ def try_yfinance_shares_outstanding(ticker: str) -> float | None:
         if v > 0:
             return v
     return None
+
+
+def fetch_yfinance_info(ticker: str) -> dict[str, Any]:
+    """Return Yahoo Finance ``Ticker.info`` summary dict, or ``{}`` on failure.
+
+    This triggers yfinance's heavier HTML-backed scrape (same tradeoff as
+    consensus/WACC paths). Prefer caching at the call site when appropriate.
+    """
+    sym = ticker.strip().upper()
+    if not sym:
+        return {}
+    try:
+        t = yf.Ticker(sym)
+        info = getattr(t, "info", None) or {}
+    except Exception:
+        return {}
+    return info if isinstance(info, dict) else {}
+
+
+def format_compact_usd(x: float | None) -> str:
+    """Format USD with ``t`` / ``b`` / ``m`` / ``k`` suffixes (e.g. ``$4.39t``)."""
+    if x is None:
+        return "—"
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return "—"
+    sign = "-" if v < 0 else ""
+    ax = abs(v)
+    if ax >= 1e12:
+        return f"{sign}${ax / 1e12:.2f}t"
+    if ax >= 1e9:
+        return f"{sign}${ax / 1e9:.2f}b"
+    if ax >= 1e6:
+        return f"{sign}${ax / 1e6:.2f}m"
+    if ax >= 1e3:
+        return f"{sign}${ax / 1e3:.2f}k"
+    return f"{sign}${ax:.2f}"
+
+
+def format_pct_from_decimal(x: float | None, *, digits: int = 2) -> str:
+    """Format Yahoo-style ratio stored as decimal (e.g. ``0.25`` -> ``25.00%``)."""
+    if x is None:
+        return "—"
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return "—"
+    return f"{f * 100:.{digits}f}%"
+
+
+def format_pe_triple(
+    trailing_pe: float | None,
+    forward_pe: float | None,
+    price: float | None,
+    forward_eps: float | None,
+    *,
+    diff_threshold: float = 0.5,
+) -> str:
+    """``TTM | Fwd | alt`` for display; third slot is EPS-implied P/E when it differs from Yahoo forward P/E."""
+
+    def _one(v: float | None) -> str:
+        if v is None:
+            return "—"
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return "—"
+        if not (0 < f < 1e4):
+            return "—"
+        return f"{f:.2f}"
+
+    seg1 = _one(trailing_pe)
+    seg2 = _one(forward_pe)
+    seg3 = "—"
+    if price is not None and forward_eps is not None:
+        try:
+            px = float(price)
+            eps = float(forward_eps)
+        except (TypeError, ValueError):
+            px, eps = 0.0, 0.0
+        if px > 0 and eps > 0:
+            calc = px / eps
+            if 0 < calc < 1e4:
+                if forward_pe is None:
+                    seg3 = f"{calc:.2f}"
+                else:
+                    try:
+                        fp = float(forward_pe)
+                    except (TypeError, ValueError):
+                        seg3 = f"{calc:.2f}"
+                    else:
+                        seg3 = f"{calc:.2f}" if abs(calc - fp) >= diff_threshold else "—"
+    return f"{seg1} | {seg2} | {seg3}"
 
 
 def get_price_history(ticker: str, period: str = "5y"):

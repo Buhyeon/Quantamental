@@ -38,23 +38,24 @@ _strip_bom_prefixed_env_keys()
 # DCF defaults. Overrideable via CLI flags or by passing kwargs to the model.
 DEFAULT_GROWTH_RATE: float = 0.08
 DEFAULT_WACC: float = 0.09
-DEFAULT_TERMINAL_GROWTH: float = 0.034
-DEFAULT_PROJECTION_YEARS: int = 10
+DEFAULT_TERMINAL_GROWTH: float = 0.025
+DEFAULT_PROJECTION_YEARS: int = 8
+DEFAULT_TERMINAL_PERIOD_YEARS: int = 12
 # When 10-Q TTM bridging is unavailable, `--fcf-avg-years` averages trailing FY
 # 10-K anchors (default 1 = latest FY only; use 3+ for smoothed averages).
 DEFAULT_FCF_AVG_YEARS: int = 1
 
 # CAPM / WACC estimation (--auto-wacc). ERP can be overridden via EQUITY_RISK_PREMIUM in ``.env``.
-DEFAULT_EQUITY_RISK_PREMIUM: float = 0.055
+DEFAULT_EQUITY_RISK_PREMIUM: float = 0.05
 DEFAULT_RISK_FREE_FALLBACK: float = 0.045
 DEFAULT_DEBT_SPREAD_OVER_RF: float = 0.025
 STATUTORY_US_CORP_TAX_RATE: float = 0.21
-WACC_CLIP_LO: float = 0.04
+WACC_CLIP_LO: float = 0.02
 WACC_CLIP_HI: float = 0.30
 
 
 def equity_risk_premium() -> float:
-    """ERP as decimal (e.g. 0.055 = 5.5%). Overridable via ``EQUITY_RISK_PREMIUM``."""
+    """ERP as decimal (e.g. 0.05 = 5%). Overridable via ``EQUITY_RISK_PREMIUM``."""
     raw = os.getenv("EQUITY_RISK_PREMIUM", "").strip()
     if raw:
         try:
@@ -103,6 +104,7 @@ class DCFAssumptions:
     wacc: float = DEFAULT_WACC
     terminal_growth: float = DEFAULT_TERMINAL_GROWTH
     projection_years: int = DEFAULT_PROJECTION_YEARS
+    terminal_period_years: int = DEFAULT_TERMINAL_PERIOD_YEARS
 
     def validate(self) -> None:
         if self.wacc <= self.terminal_growth:
@@ -112,6 +114,8 @@ class DCFAssumptions:
             )
         if self.projection_years < 1:
             raise ValueError("projection_years must be >= 1")
+        if self.terminal_period_years < 0:
+            raise ValueError("terminal_period_years must be >= 0")
 
 
 def average_fcf(history: Iterable[float], years: int = DEFAULT_FCF_AVG_YEARS) -> float:

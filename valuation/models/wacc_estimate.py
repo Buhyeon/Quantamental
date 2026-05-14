@@ -1,4 +1,4 @@
-"""CAPM-based WACC using book debt (EDGAR), market cap, Treasury yield, Yahoo beta."""
+"""CAPM-based WACC: market cap + debt proxy (yfinance EV), EDGAR tax and interest, FMP MRP."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ class WACCBreakdown:
     risk_free: float
     beta: float
     equity_risk_premium: float
+    equity_risk_premium_source: str  # "fmp" | "env_default"
     cost_of_equity: float
     cost_of_debt_pretax: float
     marginal_tax_rate: float
@@ -30,6 +31,8 @@ class WACCBreakdown:
     weight_debt: float
     market_value_equity: float
     book_value_debt: float
+    market_value_debt: float
+    debt_market_proxy_source: str
     debt_cost_source: str  # "interest_over_debt" | "rf_spread"
 
 
@@ -52,7 +55,7 @@ def risk_free_10y() -> float:
 
 
 def equity_beta(ticker: str) -> float:
-    """Yahoo 5-year levered beta from ``ticker.info``; default 1.0 if missing."""
+    """Yahoo levered beta from ``ticker.info``; default 1.0 if missing."""
     sym = ticker.strip().upper()
     try:
         t = yf.Ticker(sym)
@@ -89,12 +92,46 @@ def pretax_cost_of_debt(f: Fundamentals, risk_free: float) -> tuple[float, str]:
     return min(spread, 0.25), "rf_spread"
 
 
+def _equity_risk_premium_sourced() -> tuple[float, str]:
+    try:
+        from valuation.data.fmp import FMPError, latest_market_risk_premium
+
+        return latest_market_risk_premium(), "fmp"
+    except (FMPError, OSError, ValueError, TypeError):
+        return equity_risk_premium(), "env_default"
+
+
+def _market_value_debt_yfinance(ticker: str, book_debt: float) -> tuple[float, str]:
+    """Debt market proxy: ``enterpriseValue - marketCap`` when sane, else EDGAR book debt."""
+    sym = ticker.strip().upper()
+    book_debt = max(0.0, float(book_debt))
+    try:
+        t = yf.Ticker(sym)
+        info = getattr(t, "info", None) or {}
+        ev = info.get("enterpriseValue")
+        mc = info.get("marketCap")
+        if ev is not None and mc is not None:
+            evf, mcf = float(ev), float(mc)
+            if evf > mcf > 0:
+                d_mkt = evf - mcf
+                if d_mkt <= 0:
+                    return book_debt, "book_debt_edgar"
+                hi = max(5.0 * max(book_debt, 1.0), book_debt + 1.0)
+                if d_mkt > hi:
+                    return book_debt, "book_debt_edgar_cap"
+                return d_mkt, "enterprise_value_minus_market_cap"
+    except Exception:
+        pass
+    return book_debt, "book_debt_edgar"
+
+
 def estimate_wacc(ticker: str, f: Fundamentals, price_per_share: float) -> WACCBreakdown:
-    """WACC = w_e r_e + w_d r_d (1-T) with CAPM for r_e and book debt as D proxy."""
+    """WACC = w_e r_e + w_d r_d (1-T) with CAPM; weights use market E and debt proxy."""
     sh = f.shares_outstanding
     px = float(price_per_share)
     e = max(0.0, sh * px)
-    d = max(0.0, f.total_debt)
+    book_d = max(0.0, f.total_debt)
+    d, d_src = _market_value_debt_yfinance(ticker, book_d)
 
     if e <= 0:
         raise ValueError("Market value of equity must be positive for WACC.")
@@ -104,7 +141,7 @@ def estimate_wacc(ticker: str, f: Fundamentals, price_per_share: float) -> WACCB
     wd = d / v
 
     rf = risk_free_10y()
-    erp = equity_risk_premium()
+    erp, erp_src = _equity_risk_premium_sourced()
     b = equity_beta(ticker)
     re = rf + b * erp
 
@@ -119,12 +156,15 @@ def estimate_wacc(ticker: str, f: Fundamentals, price_per_share: float) -> WACCB
         risk_free=rf,
         beta=b,
         equity_risk_premium=erp,
+        equity_risk_premium_source=erp_src,
         cost_of_equity=re,
         cost_of_debt_pretax=rd,
         marginal_tax_rate=t,
         weight_equity=we,
         weight_debt=wd,
         market_value_equity=e,
-        book_value_debt=d,
+        book_value_debt=book_d,
+        market_value_debt=d,
+        debt_market_proxy_source=d_src,
         debt_cost_source=rd_src,
     )

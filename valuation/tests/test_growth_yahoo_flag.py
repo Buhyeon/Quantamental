@@ -40,6 +40,7 @@ def test_include_yahoo_false_skips_financial_consensus():
             "X",
             cik=1,
             fcf_values=[100.0, 110.0],
+            auto_growth_mode="blended",
             include_yahoo_consensus=False,
         )
     yh.assert_not_called()
